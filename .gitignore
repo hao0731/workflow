@@ -1,0 +1,42 @@
+# Binaries
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+workflow-engine
+
+# Test coverage
+coverage.out
+coverage.html
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Go
+vendor/
+go.work
+go.work.sum
+
+# Docker
+*.log
+
+# Build artifacts
+dist/
+tmp/
+
+.agent

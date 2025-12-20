@@ -1,0 +1,16 @@
+packages:
+  github.com/cheriehsieh/orchestration/internal/eventstore:
+    config:
+      all: true
+      pkgname: mocks
+      filename: "mocks/mock_{{.InterfaceName}}.go"
+  github.com/cheriehsieh/orchestration/internal/eventbus:
+    config:
+      all: true
+      pkgname: mocks
+      filename: "mocks/mock_{{.InterfaceName}}.go"
+  github.com/cheriehsieh/orchestration/internal/engine:
+    config:
+      all: true
+      pkgname: mocks
+      filename: "mocks/mock_{{.InterfaceName}}.go"
