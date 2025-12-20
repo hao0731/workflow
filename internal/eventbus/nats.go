@@ -4,8 +4,16 @@ import (
 	"context"
 	"log/slog"
 
-	cloudevents "github.com/cloudevents/sdk-go/v2"
 	"github.com/nats-io/nats.go"
+
+	cloudevents "github.com/cloudevents/sdk-go/v2"
+)
+
+// Compile-time interface compliance checks.
+var (
+	_ Publisher  = (*NATSEventBus)(nil)
+	_ Subscriber = (*NATSEventBus)(nil)
+	_ EventBus   = (*NATSEventBus)(nil)
 )
 
 // NATSEventBus implements EventBus using NATS JetStream with CloudEvents.

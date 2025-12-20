@@ -4,89 +4,108 @@ import (
 	"context"
 	"testing"
 
+	"github.com/stretchr/testify/mock"
+
+	cloudevents "github.com/cloudevents/sdk-go/v2"
+
 	"github.com/cheriehsieh/orchestration/internal/engine"
 	enginemocks "github.com/cheriehsieh/orchestration/internal/engine/mocks"
 	"github.com/cheriehsieh/orchestration/internal/eventbus"
 	eventbusmocks "github.com/cheriehsieh/orchestration/internal/eventbus/mocks"
 	eventstoremocks "github.com/cheriehsieh/orchestration/internal/eventstore/mocks"
-	cloudevents "github.com/cloudevents/sdk-go/v2"
-	"github.com/stretchr/testify/mock"
 )
 
-func TestOrchestrator_HandleExecutionStarted_SchedulesStartNode(t *testing.T) {
-	// Arrange
-	ctx := context.Background()
-
-	mockEventStore := eventstoremocks.NewMockEventStore(t)
-	mockPublisher := eventbusmocks.NewMockPublisher(t)
-	mockSubscriber := eventbusmocks.NewMockSubscriber(t)
-	mockWorkflowRepo := enginemocks.NewMockWorkflowRepository(t)
-
-	testWorkflow := &engine.Workflow{
-		ID: "test-workflow",
-		Nodes: []engine.Node{
-			{ID: "start", Type: engine.StartNode, Name: "Start"},
-			{ID: "action", Type: engine.ActionNode, Name: "Action"},
+func TestOrchestrator_HandleEvent(t *testing.T) {
+	tests := []struct {
+		name          string
+		eventType     string
+		eventData     any
+		workflowID    string
+		expectedCalls func(*eventstoremocks.MockEventStore, *eventbusmocks.MockPublisher, *enginemocks.MockWorkflowRepository)
+		wantErr       bool
+	}{
+		{
+			name:       "ExecutionStarted schedules start node",
+			eventType:  engine.ExecutionStarted,
+			workflowID: "test-workflow",
+			eventData: engine.ExecutionStartedData{
+				WorkflowID: "test-workflow",
+				InputData:  map[string]any{"key": "value"},
+			},
+			expectedCalls: func(es *eventstoremocks.MockEventStore, pub *eventbusmocks.MockPublisher, repo *enginemocks.MockWorkflowRepository) {
+				repo.EXPECT().GetByID(mock.Anything, "test-workflow").Return(testWorkflow(), nil)
+				es.EXPECT().Append(mock.Anything, mock.MatchedBy(func(e cloudevents.Event) bool {
+					return e.Type() == engine.NodeExecutionScheduled
+				})).Return(nil)
+				pub.EXPECT().Publish(mock.Anything, mock.MatchedBy(func(e cloudevents.Event) bool {
+					return e.Type() == engine.NodeExecutionScheduled
+				})).Return(nil)
+			},
+			wantErr: false,
 		},
-		Connections: []engine.Connection{
-			{FromNode: "start", ToNode: "action"},
+		{
+			name:       "NodeExecutionCompleted routes based on output port",
+			eventType:  engine.NodeExecutionCompleted,
+			workflowID: "conditional-workflow",
+			eventData: engine.NodeExecutionCompletedData{
+				NodeID:     "check",
+				OutputPort: engine.PortTrue,
+				OutputData: map[string]any{"result": "ok"},
+				RunIndex:   0,
+			},
+			expectedCalls: func(es *eventstoremocks.MockEventStore, pub *eventbusmocks.MockPublisher, repo *enginemocks.MockWorkflowRepository) {
+				repo.EXPECT().GetByID(mock.Anything, "conditional-workflow").Return(conditionalWorkflow(), nil)
+				// Should only schedule "on-true" node, not "on-false"
+				es.EXPECT().Append(mock.Anything, mock.MatchedBy(func(e cloudevents.Event) bool {
+					var data engine.NodeExecutionScheduledData
+					_ = e.DataAs(&data)
+					return e.Type() == engine.NodeExecutionScheduled && data.NodeID == "on-true"
+				})).Return(nil)
+				pub.EXPECT().Publish(mock.Anything, mock.MatchedBy(func(e cloudevents.Event) bool {
+					return e.Type() == engine.NodeExecutionScheduled
+				})).Return(nil)
+			},
+			wantErr: false,
 		},
 	}
 
-	executionStartedEvent := cloudevents.NewEvent()
-	executionStartedEvent.SetID("event-1")
-	executionStartedEvent.SetSource(engine.EventSource)
-	executionStartedEvent.SetType(engine.ExecutionStarted)
-	executionStartedEvent.SetSubject("exec-123")
-	executionStartedEvent.SetData(cloudevents.ApplicationJSON, engine.ExecutionStartedData{
-		WorkflowID: "test-workflow",
-		InputData:  map[string]interface{}{"key": "value"},
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
 
-	// Mock expectations
-	mockWorkflowRepo.EXPECT().
-		GetByID(ctx, "test-workflow").
-		Return(testWorkflow, nil)
+			mockEventStore := eventstoremocks.NewMockEventStore(t)
+			mockPublisher := eventbusmocks.NewMockPublisher(t)
+			mockSubscriber := eventbusmocks.NewMockSubscriber(t)
+			mockWorkflowRepo := enginemocks.NewMockWorkflowRepository(t)
 
-	mockEventStore.EXPECT().
-		Append(ctx, mock.MatchedBy(func(e cloudevents.Event) bool {
-			return e.Type() == engine.NodeExecutionScheduled
-		})).
-		Return(nil)
+			tt.expectedCalls(mockEventStore, mockPublisher, mockWorkflowRepo)
 
-	mockPublisher.EXPECT().
-		Publish(ctx, mock.MatchedBy(func(e cloudevents.Event) bool {
-			return e.Type() == engine.NodeExecutionScheduled
-		})).
-		Return(nil)
+			event := cloudevents.NewEvent()
+			event.SetID("event-1")
+			event.SetSource(engine.EventSource)
+			event.SetType(tt.eventType)
+			event.SetSubject("exec-123")
+			event.SetExtension("workflowid", tt.workflowID)
+			_ = event.SetData(cloudevents.ApplicationJSON, tt.eventData)
 
-	// Simulate subscription
-	mockSubscriber.EXPECT().
-		Subscribe(ctx, mock.AnythingOfType("eventbus.EventHandler")).
-		RunAndReturn(func(ctx context.Context, handler eventbus.EventHandler) error {
-			return handler(ctx, executionStartedEvent)
+			mockSubscriber.EXPECT().
+				Subscribe(ctx, mock.AnythingOfType("eventbus.EventHandler")).
+				RunAndReturn(func(ctx context.Context, handler eventbus.EventHandler) error {
+					return handler(ctx, event)
+				})
+
+			orchestrator := engine.NewOrchestrator(mockEventStore, mockPublisher, mockSubscriber, mockWorkflowRepo)
+			err := orchestrator.Start(ctx)
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Orchestrator.Start() error = %v, wantErr %v", err, tt.wantErr)
+			}
 		})
-
-	// Act
-	orchestrator := engine.NewOrchestrator(mockEventStore, mockPublisher, mockSubscriber, mockWorkflowRepo)
-	err := orchestrator.Start(ctx)
-
-	// Assert
-	if err != nil {
-		t.Errorf("Expected no error, got: %v", err)
 	}
 }
 
-func TestOrchestrator_HandleNodeCompleted_SchedulesNextNode(t *testing.T) {
-	// Arrange
-	ctx := context.Background()
-
-	mockEventStore := eventstoremocks.NewMockEventStore(t)
-	mockPublisher := eventbusmocks.NewMockPublisher(t)
-	mockSubscriber := eventbusmocks.NewMockSubscriber(t)
-	mockWorkflowRepo := enginemocks.NewMockWorkflowRepository(t)
-
-	testWorkflow := &engine.Workflow{
+func testWorkflow() *engine.Workflow {
+	return &engine.Workflow{
 		ID: "test-workflow",
 		Nodes: []engine.Node{
 			{ID: "start", Type: engine.StartNode, Name: "Start"},
@@ -96,48 +115,21 @@ func TestOrchestrator_HandleNodeCompleted_SchedulesNextNode(t *testing.T) {
 			{FromNode: "start", ToNode: "action"},
 		},
 	}
+}
 
-	nodeCompletedEvent := cloudevents.NewEvent()
-	nodeCompletedEvent.SetID("event-2")
-	nodeCompletedEvent.SetSource(engine.EventSource)
-	nodeCompletedEvent.SetType(engine.NodeExecutionCompleted)
-	nodeCompletedEvent.SetSubject("exec-123")
-	nodeCompletedEvent.SetExtension("workflowid", "test-workflow")
-	nodeCompletedEvent.SetData(cloudevents.ApplicationJSON, engine.NodeExecutionCompletedData{
-		NodeID:     "start",
-		OutputData: map[string]interface{}{"result": "ok"},
-		RunIndex:   0,
-	})
-
-	// Mock expectations
-	mockWorkflowRepo.EXPECT().
-		GetByID(ctx, "test-workflow").
-		Return(testWorkflow, nil)
-
-	mockEventStore.EXPECT().
-		Append(ctx, mock.MatchedBy(func(e cloudevents.Event) bool {
-			return e.Type() == engine.NodeExecutionScheduled
-		})).
-		Return(nil)
-
-	mockPublisher.EXPECT().
-		Publish(ctx, mock.MatchedBy(func(e cloudevents.Event) bool {
-			return e.Type() == engine.NodeExecutionScheduled
-		})).
-		Return(nil)
-
-	mockSubscriber.EXPECT().
-		Subscribe(ctx, mock.AnythingOfType("eventbus.EventHandler")).
-		RunAndReturn(func(ctx context.Context, handler eventbus.EventHandler) error {
-			return handler(ctx, nodeCompletedEvent)
-		})
-
-	// Act
-	orchestrator := engine.NewOrchestrator(mockEventStore, mockPublisher, mockSubscriber, mockWorkflowRepo)
-	err := orchestrator.Start(ctx)
-
-	// Assert
-	if err != nil {
-		t.Errorf("Expected no error, got: %v", err)
+func conditionalWorkflow() *engine.Workflow {
+	return &engine.Workflow{
+		ID: "conditional-workflow",
+		Nodes: []engine.Node{
+			{ID: "start", Type: engine.StartNode, Name: "Start"},
+			{ID: "check", Type: engine.IfNode, Name: "Check Condition"},
+			{ID: "on-true", Type: engine.ActionNode, Name: "On True"},
+			{ID: "on-false", Type: engine.ActionNode, Name: "On False"},
+		},
+		Connections: []engine.Connection{
+			{FromNode: "start", ToNode: "check"},
+			{FromNode: "check", FromPort: engine.PortTrue, ToNode: "on-true"},
+			{FromNode: "check", FromPort: engine.PortFalse, ToNode: "on-false"},
+		},
 	}
 }

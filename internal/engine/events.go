@@ -33,6 +33,7 @@ type NodeExecutionStartedData struct {
 // NodeExecutionCompletedData is the data payload for NodeExecutionCompleted events.
 type NodeExecutionCompletedData struct {
 	NodeID     string         `json:"node_id"`
+	OutputPort string         `json:"output_port"` // Which port the output goes to
 	OutputData map[string]any `json:"output_data,omitempty"`
 	RunIndex   int            `json:"run_index"`
 }

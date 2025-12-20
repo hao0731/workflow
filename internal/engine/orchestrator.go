@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/google/uuid"
+
+	cloudevents "github.com/cloudevents/sdk-go/v2"
+
 	"github.com/cheriehsieh/orchestration/internal/eventbus"
 	"github.com/cheriehsieh/orchestration/internal/eventstore"
-	cloudevents "github.com/cloudevents/sdk-go/v2"
-	"github.com/google/uuid"
 )
 
 type Orchestrator struct {
@@ -16,6 +18,7 @@ type Orchestrator struct {
 	publisher    eventbus.Publisher
 	subscriber   eventbus.Subscriber
 	workflowRepo WorkflowRepository
+	joinState    *JoinState
 	logger       *slog.Logger
 }
 
@@ -31,6 +34,7 @@ func NewOrchestrator(
 		publisher:    pub,
 		subscriber:   sub,
 		workflowRepo: repo,
+		joinState:    NewJoinState(),
 		logger:       slog.Default(),
 	}
 	for _, opt := range opts {
@@ -109,37 +113,91 @@ func (o *Orchestrator) handleNodeExecutionCompleted(ctx context.Context, event c
 		return fmt.Errorf("failed to get workflow: %w", err)
 	}
 
-	nextNodes := workflow.GetNextNodes(payload.NodeID)
+	executionID := event.Subject()
 
-	o.logger.DebugContext(ctx, "node completed, scheduling next",
+	// Route based on output port
+	nextNodes := workflow.GetNextNodes(payload.NodeID, payload.OutputPort)
+
+	o.logger.DebugContext(ctx, "node completed, routing to next",
 		slog.String("completed_node", payload.NodeID),
+		slog.String("output_port", payload.OutputPort),
 		slog.Any("next_nodes", nextNodes),
 	)
 
 	for _, nodeID := range nextNodes {
-		if err := o.scheduleNode(ctx, event.Subject(), nodeID, payload.OutputData, 0, workflowID); err != nil {
-			return err
+		node := workflow.GetNode(nodeID)
+		if node == nil {
+			continue
+		}
+
+		// Handle join nodes specially
+		if IsJoinNode(node) {
+			if err := o.handleJoinNode(ctx, executionID, workflowID, workflow, node, payload.NodeID, payload.OutputData); err != nil {
+				return err
+			}
+		} else {
+			// Regular node - schedule immediately
+			if err := o.scheduleNode(ctx, executionID, nodeID, payload.OutputData, 0, workflowID); err != nil {
+				return err
+			}
 		}
 	}
 
 	if len(nextNodes) == 0 {
-		o.logger.InfoContext(ctx, "execution completed",
-			slog.String("execution_id", event.Subject()),
-		)
-
-		finishedEvent := o.newEvent(ExecutionCompleted, event.Subject())
-		finishedEvent.SetExtension("workflowid", workflowID)
-		_ = finishedEvent.SetData(cloudevents.ApplicationJSON, ExecutionCompletedData{
-			FinalData: payload.OutputData,
-		})
-
-		if err := o.eventStore.Append(ctx, finishedEvent); err != nil {
-			return err
-		}
-		return o.publisher.Publish(ctx, finishedEvent)
+		return o.emitExecutionCompleted(ctx, executionID, workflowID, payload.OutputData)
 	}
 
 	return nil
+}
+
+func (o *Orchestrator) handleJoinNode(ctx context.Context, executionID, workflowID string, workflow *Workflow, joinNode *Node, fromNodeID string, outputData map[string]any) error {
+	predecessors := workflow.GetPredecessors(joinNode.ID)
+	toPort := FindToPort(workflow, fromNodeID, joinNode.ID)
+
+	o.logger.DebugContext(ctx, "processing join node",
+		slog.String("join_node", joinNode.ID),
+		slog.String("from_node", fromNodeID),
+		slog.String("to_port", toPort),
+		slog.Any("predecessors", predecessors),
+	)
+
+	// Initialize or get existing join state
+	o.joinState.GetOrCreate(executionID, joinNode.ID, workflowID, predecessors)
+
+	// Mark this predecessor as completed
+	allDone, combinedInputs := o.joinState.MarkCompleted(executionID, joinNode.ID, fromNodeID, toPort, outputData)
+
+	if !allDone {
+		o.logger.DebugContext(ctx, "join node waiting for more inputs",
+			slog.String("join_node", joinNode.ID),
+		)
+		return nil
+	}
+
+	o.logger.InfoContext(ctx, "join node ready, all predecessors completed",
+		slog.String("join_node", joinNode.ID),
+		slog.Any("combined_inputs", combinedInputs),
+	)
+
+	// All predecessors done - schedule the join node
+	return o.scheduleNode(ctx, executionID, joinNode.ID, combinedInputs, 0, workflowID)
+}
+
+func (o *Orchestrator) emitExecutionCompleted(ctx context.Context, executionID, workflowID string, finalData map[string]any) error {
+	o.logger.InfoContext(ctx, "execution completed",
+		slog.String("execution_id", executionID),
+	)
+
+	finishedEvent := o.newEvent(ExecutionCompleted, executionID)
+	finishedEvent.SetExtension("workflowid", workflowID)
+	_ = finishedEvent.SetData(cloudevents.ApplicationJSON, ExecutionCompletedData{
+		FinalData: finalData,
+	})
+
+	if err := o.eventStore.Append(ctx, finishedEvent); err != nil {
+		return err
+	}
+	return o.publisher.Publish(ctx, finishedEvent)
 }
 
 func (o *Orchestrator) scheduleNode(ctx context.Context, executionID, nodeID string, inputData map[string]any, runIndex int, workflowID string) error {

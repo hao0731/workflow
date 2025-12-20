@@ -3,9 +3,13 @@ package eventstore
 import (
 	"context"
 
-	cloudevents "github.com/cloudevents/sdk-go/v2"
 	"go.mongodb.org/mongo-driver/mongo"
+
+	cloudevents "github.com/cloudevents/sdk-go/v2"
 )
+
+// Compile-time interface compliance check.
+var _ EventStore = (*MongoEventStore)(nil)
 
 // MongoEventStore implements EventStore using MongoDB.
 type MongoEventStore struct {
@@ -38,8 +42,8 @@ func (s *MongoEventStore) GetBySubject(ctx context.Context, subject string) ([]c
 	}
 
 	events := make([]cloudevents.Event, len(stored))
-	for i, s := range stored {
-		events[i] = s.ToCloudEvent()
+	for i, se := range stored {
+		events[i] = se.ToCloudEvent()
 	}
 	return events, nil
 }

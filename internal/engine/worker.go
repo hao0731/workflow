@@ -4,14 +4,23 @@ import (
 	"context"
 	"log/slog"
 
+	"github.com/google/uuid"
+
+	cloudevents "github.com/cloudevents/sdk-go/v2"
+
 	"github.com/cheriehsieh/orchestration/internal/eventbus"
 	"github.com/cheriehsieh/orchestration/internal/eventstore"
-	cloudevents "github.com/cloudevents/sdk-go/v2"
-	"github.com/google/uuid"
 )
 
+// NodeResult is the result of a node execution.
+type NodeResult struct {
+	Output map[string]any
+	Port   string // Output port name; empty = "default"
+}
+
 // NodeHandler is the function signature for node execution logic.
-type NodeHandler func(ctx context.Context, input, parameters map[string]any) (map[string]any, error)
+// Returns output data, output port name, and error.
+type NodeHandler func(ctx context.Context, input, parameters map[string]any) (NodeResult, error)
 
 type Worker struct {
 	eventStore   eventstore.EventStore
@@ -117,7 +126,7 @@ func (w *Worker) handleNodeExecutionScheduled(ctx context.Context, event cloudev
 	)
 
 	// 2. Execute Node Logic
-	output, err := handler(ctx, payload.InputData, node.Parameters)
+	result, err := handler(ctx, payload.InputData, node.Parameters)
 
 	// 3. Emit Completion/Failure
 	if err != nil {
@@ -140,11 +149,23 @@ func (w *Worker) handleNodeExecutionScheduled(ctx context.Context, event cloudev
 		return w.publisher.Publish(ctx, failedEvent)
 	}
 
+	// Normalize port name
+	port := result.Port
+	if port == "" {
+		port = DefaultPort
+	}
+
+	w.logger.DebugContext(ctx, "node completed",
+		slog.String("node_id", payload.NodeID),
+		slog.String("output_port", port),
+	)
+
 	completedEvent := w.newEvent(NodeExecutionCompleted, event.Subject())
 	completedEvent.SetExtension("workflowid", workflowID)
 	_ = completedEvent.SetData(cloudevents.ApplicationJSON, NodeExecutionCompletedData{
 		NodeID:     payload.NodeID,
-		OutputData: output,
+		OutputPort: port,
+		OutputData: result.Output,
 		RunIndex:   payload.RunIndex,
 	})
 
