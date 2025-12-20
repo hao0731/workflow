@@ -18,7 +18,7 @@ type Orchestrator struct {
 	publisher    eventbus.Publisher
 	subscriber   eventbus.Subscriber
 	workflowRepo WorkflowRepository
-	joinState    *JoinState
+	joinManager  *JoinStateManager
 	logger       *slog.Logger
 }
 
@@ -34,7 +34,7 @@ func NewOrchestrator(
 		publisher:    pub,
 		subscriber:   sub,
 		workflowRepo: repo,
-		joinState:    NewJoinState(),
+		joinManager:  NewJoinStateManager(NewInMemoryJoinStateStore()), // Default
 		logger:       slog.Default(),
 	}
 	for _, opt := range opts {
@@ -50,6 +50,13 @@ type OrchestratorOption func(*Orchestrator)
 func WithOrchestratorLogger(logger *slog.Logger) OrchestratorOption {
 	return func(o *Orchestrator) {
 		o.logger = logger
+	}
+}
+
+// WithJoinStateManager sets a custom join state manager.
+func WithJoinStateManager(manager *JoinStateManager) OrchestratorOption {
+	return func(o *Orchestrator) {
+		o.joinManager = manager
 	}
 }
 
@@ -161,13 +168,13 @@ func (o *Orchestrator) handleJoinNode(ctx context.Context, executionID, workflow
 		slog.Any("predecessors", predecessors),
 	)
 
-	// Initialize or get existing join state
-	o.joinState.GetOrCreate(executionID, joinNode.ID, workflowID, predecessors)
+	// Process join logic via manager
+	complete, combinedInputs, err := o.joinManager.ProcessJoin(ctx, executionID, joinNode.ID, workflowID, predecessors, fromNodeID, toPort, outputData)
+	if err != nil {
+		return err
+	}
 
-	// Mark this predecessor as completed
-	allDone, combinedInputs := o.joinState.MarkCompleted(executionID, joinNode.ID, fromNodeID, toPort, outputData)
-
-	if !allDone {
+	if !complete {
 		o.logger.DebugContext(ctx, "join node waiting for more inputs",
 			slog.String("join_node", joinNode.ID),
 		)

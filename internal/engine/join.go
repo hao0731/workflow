@@ -2,166 +2,168 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"sync"
-
-	"github.com/cheriehsieh/orchestration/internal/eventstore"
 )
 
-// JoinState tracks pending join nodes waiting for all predecessors.
-type JoinState struct {
-	mu     sync.RWMutex
-	states map[string]*PendingJoin // key: executionID:joinNodeID
-}
+var (
+	ErrJoinStateNotFound = errors.New("join state not found")
+	ErrJoinStateConflict = errors.New("join state conflict (CAS failure)")
+)
 
 // PendingJoin tracks the state of a join node waiting for inputs.
 type PendingJoin struct {
-	ExecutionID     string
-	JoinNodeID      string
-	WorkflowID      string
-	RequiredNodes   []string                  // Predecessor node IDs
-	CompletedNodes  map[string]bool           // Which predecessors have completed
-	CollectedInputs map[string]map[string]any // ToPort -> output data
-	RunIndex        int
+	ExecutionID     string                    `json:"execution_id"`
+	JoinNodeID      string                    `json:"join_node_id"`
+	WorkflowID      string                    `json:"workflow_id"`
+	RequiredNodes   []string                  `json:"required_nodes"`
+	CompletedNodes  map[string]bool           `json:"completed_nodes"`
+	CollectedInputs map[string]map[string]any `json:"collected_inputs"`
+	Version         uint64                    `json:"version"` // For Optimistic Concurrency Control
 }
 
-// NewJoinState creates a new join state tracker.
-func NewJoinState() *JoinState {
-	return &JoinState{
+// JoinStateStore defines the interface for storing pending join states.
+type JoinStateStore interface {
+	// Get retrieves the current state.
+	Get(ctx context.Context, executionID, joinNodeID string) (*PendingJoin, error)
+	// Save creates or updates the state. Must handle CAS using Version.
+	Save(ctx context.Context, state *PendingJoin) error
+	// Delete removes the state.
+	Delete(ctx context.Context, executionID, joinNodeID string) error
+}
+
+// JoinStateManager handles business logic for join nodes.
+type JoinStateManager struct {
+	store JoinStateStore
+}
+
+func NewJoinStateManager(store JoinStateStore) *JoinStateManager {
+	return &JoinStateManager{store: store}
+}
+
+// ProcessJoin handles a completion event for a join node.
+// It loads state, updates it, and saves it. Returns true if join is complete.
+func (m *JoinStateManager) ProcessJoin(ctx context.Context, executionID, joinNodeID, workflowID string, predecessors []string, fromNodeID, toPort string, outputData map[string]any) (bool, map[string]any, error) {
+	// Simple retry loop for optimistic locking
+	for i := 0; i < 3; i++ {
+		state, err := m.store.Get(ctx, executionID, joinNodeID)
+		if err != nil {
+			if errors.Is(err, ErrJoinStateNotFound) {
+				// Initialize new state
+				state = &PendingJoin{
+					ExecutionID:     executionID,
+					JoinNodeID:      joinNodeID,
+					WorkflowID:      workflowID,
+					RequiredNodes:   predecessors,
+					CompletedNodes:  make(map[string]bool),
+					CollectedInputs: make(map[string]map[string]any),
+					Version:         0,
+				}
+			} else {
+				return false, nil, err
+			}
+		}
+
+		// Update state
+		state.CompletedNodes[fromNodeID] = true
+		if toPort == "" {
+			toPort = fromNodeID
+		}
+		if state.CollectedInputs == nil {
+			state.CollectedInputs = make(map[string]map[string]any)
+		}
+		state.CollectedInputs[toPort] = outputData
+
+		// Check if done
+		allDone := true
+		for _, req := range state.RequiredNodes {
+			if !state.CompletedNodes[req] {
+				allDone = false
+				break
+			}
+		}
+
+		// Save state
+		if err := m.store.Save(ctx, state); err != nil {
+			if errors.Is(err, ErrJoinStateConflict) {
+				continue // Retry
+			}
+			return false, nil, err
+		}
+
+		if allDone {
+			// Clean up
+			_ = m.store.Delete(ctx, executionID, joinNodeID)
+
+			inputs := make(map[string]any)
+			for port, data := range state.CollectedInputs {
+				inputs[port] = data
+			}
+			return true, inputs, nil
+		}
+
+		return false, nil, nil
+	}
+	return false, nil, ErrJoinStateConflict
+}
+
+// InMemoryJoinStateStore implements JoinStateStore using a map.
+type InMemoryJoinStateStore struct {
+	mu     sync.RWMutex
+	states map[string]*PendingJoin
+}
+
+func NewInMemoryJoinStateStore() *InMemoryJoinStateStore {
+	return &InMemoryJoinStateStore{
 		states: make(map[string]*PendingJoin),
 	}
 }
 
-func (js *JoinState) key(executionID, joinNodeID string) string {
+func (s *InMemoryJoinStateStore) key(executionID, joinNodeID string) string {
 	return executionID + ":" + joinNodeID
 }
 
-// GetOrCreate returns existing pending join or creates a new one.
-func (js *JoinState) GetOrCreate(executionID, joinNodeID, workflowID string, requiredNodes []string) *PendingJoin {
-	js.mu.Lock()
-	defer js.mu.Unlock()
+func (s *InMemoryJoinStateStore) Get(ctx context.Context, executionID, joinNodeID string) (*PendingJoin, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
-	key := js.key(executionID, joinNodeID)
-	if pj, exists := js.states[key]; exists {
-		return pj
+	state, ok := s.states[s.key(executionID, joinNodeID)]
+	if !ok {
+		return nil, ErrJoinStateNotFound
 	}
-
-	pj := &PendingJoin{
-		ExecutionID:     executionID,
-		JoinNodeID:      joinNodeID,
-		WorkflowID:      workflowID,
-		RequiredNodes:   requiredNodes,
-		CompletedNodes:  make(map[string]bool),
-		CollectedInputs: make(map[string]map[string]any),
-	}
-	js.states[key] = pj
-	return pj
+	// Return copy to prevent external mutation affecting the store
+	copy := *state
+	return &copy, nil
 }
 
-// MarkCompleted marks a predecessor as completed and returns true if all are done.
-func (js *JoinState) MarkCompleted(executionID, joinNodeID, fromNodeID, toPort string, outputData map[string]any) (allDone bool, inputs map[string]any) {
-	js.mu.Lock()
-	defer js.mu.Unlock()
+func (s *InMemoryJoinStateStore) Save(ctx context.Context, state *PendingJoin) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	key := js.key(executionID, joinNodeID)
-	pj, exists := js.states[key]
-	if !exists {
-		return false, nil
-	}
+	key := s.key(state.ExecutionID, state.JoinNodeID)
+	existing, exists := s.states[key]
 
-	pj.CompletedNodes[fromNodeID] = true
-	if toPort == "" {
-		toPort = fromNodeID // Use node ID as default port name
-	}
-	pj.CollectedInputs[toPort] = outputData
-
-	// Check if all required nodes have completed
-	for _, req := range pj.RequiredNodes {
-		if !pj.CompletedNodes[req] {
-			return false, nil
+	if exists {
+		if state.Version != existing.Version {
+			return ErrJoinStateConflict
 		}
+	} else if state.Version != 0 {
+		return ErrJoinStateConflict
 	}
 
-	// All done - collect inputs and clean up
-	inputs = make(map[string]any)
-	for port, data := range pj.CollectedInputs {
-		inputs[port] = data
-	}
-	delete(js.states, key)
-
-	return true, inputs
+	// Store copy
+	newState := *state
+	newState.Version++
+	s.states[key] = &newState
+	state.Version = newState.Version // Update caller's version
+	return nil
 }
 
-// Remove cleans up join state for an execution.
-func (js *JoinState) Remove(executionID, joinNodeID string) {
-	js.mu.Lock()
-	defer js.mu.Unlock()
-	delete(js.states, js.key(executionID, joinNodeID))
-}
-
-// CollectJoinInputsFromEvents queries the event store for completed nodes to build join inputs.
-// This is used for recovery after restart.
-func CollectJoinInputsFromEvents(ctx context.Context, es eventstore.EventStore, executionID string, workflow *Workflow, joinNodeID string) (map[string]any, bool) {
-	events, err := es.GetBySubject(ctx, executionID)
-	if err != nil {
-		return nil, false
-	}
-
-	predecessors := workflow.GetPredecessors(joinNodeID)
-	connections := workflow.GetConnectionsTo(joinNodeID)
-
-	// Build a map of FromNode -> ToPort
-	portMap := make(map[string]string)
-	for _, c := range connections {
-		toPort := c.ToPort
-		if toPort == "" {
-			toPort = c.FromNode
-		}
-		portMap[c.FromNode] = toPort
-	}
-
-	completedOutputs := make(map[string]map[string]any)
-	for _, e := range events {
-		if e.Type() != NodeExecutionCompleted {
-			continue
-		}
-		var data NodeExecutionCompletedData
-		if err := e.DataAs(&data); err != nil {
-			continue
-		}
-		completedOutputs[data.NodeID] = data.OutputData
-	}
-
-	// Check if all predecessors have completed
-	inputs := make(map[string]any)
-	for _, pred := range predecessors {
-		output, ok := completedOutputs[pred]
-		if !ok {
-			return nil, false // Not all predecessors done
-		}
-		port := portMap[pred]
-		inputs[port] = output
-	}
-
-	return inputs, true
-}
-
-// IsJoinNode checks if a node is a join node.
-func IsJoinNode(n *Node) bool {
-	return n != nil && n.Type == JoinNode
-}
-
-// GetJoinTargets returns join nodes that a completed node feeds into.
-func GetJoinTargets(workflow *Workflow, completedNodeID string) []string {
-	var joins []string
-	for _, c := range workflow.Connections {
-		if c.FromNode == completedNodeID {
-			node := workflow.GetNode(c.ToNode)
-			if IsJoinNode(node) {
-				joins = append(joins, c.ToNode)
-			}
-		}
-	}
-	return joins
+func (s *InMemoryJoinStateStore) Delete(ctx context.Context, executionID, joinNodeID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.states, s.key(executionID, joinNodeID))
+	return nil
 }
 
 // FindToPort finds the ToPort for a connection from sourceNode to targetNode.
@@ -175,4 +177,8 @@ func FindToPort(workflow *Workflow, sourceNode, targetNode string) string {
 		}
 	}
 	return sourceNode
+}
+
+func IsJoinNode(n *Node) bool {
+	return n != nil && n.Type == JoinNode
 }

@@ -73,32 +73,39 @@ func main() {
 		}
 	}
 
-	// 5. Define a conditional workflow
-	conditionalWorkflow := &engine.Workflow{
-		ID: "conditional-workflow-1",
+	// 5. Define a conditional workflow with Join
+	workflow := &engine.Workflow{
+		ID: "join-workflow-1",
 		Nodes: []engine.Node{
 			{ID: "start", Type: engine.StartNode, Name: "Start"},
-			{ID: "check-value", Type: engine.IfNode, Name: "Check Value", Parameters: map[string]any{"threshold": 10}},
-			{ID: "high-path", Type: engine.ActionNode, Name: "High Path", Parameters: map[string]any{"message": "Value is high"}},
-			{ID: "low-path", Type: engine.ActionNode, Name: "Low Path", Parameters: map[string]any{"message": "Value is low"}},
+			{ID: "parallel-1", Type: engine.ActionNode, Name: "Parallel 1", Parameters: map[string]any{"msg": "p1"}},
+			{ID: "parallel-2", Type: engine.ActionNode, Name: "Parallel 2", Parameters: map[string]any{"msg": "p2"}},
+			{ID: "join", Type: engine.JoinNode, Name: "Join"},
+			{ID: "end", Type: engine.ActionNode, Name: "End"},
 		},
 		Connections: []engine.Connection{
-			{FromNode: "start", ToNode: "check-value"},
-			{FromNode: "check-value", FromPort: engine.PortTrue, ToNode: "high-path"},
-			{FromNode: "check-value", FromPort: engine.PortFalse, ToNode: "low-path"},
+			{FromNode: "start", ToNode: "parallel-1"},
+			{FromNode: "start", ToNode: "parallel-2"},
+			{FromNode: "parallel-1", ToNode: "join", ToPort: "p1_out"},
+			{FromNode: "parallel-2", ToNode: "join", ToPort: "p2_out"},
+			{FromNode: "join", ToNode: "end"},
 		},
 	}
 
-	workflowRepo := &InMemoryWorkflowRepo{workflows: map[string]*engine.Workflow{conditionalWorkflow.ID: conditionalWorkflow}}
+	workflowRepo := &InMemoryWorkflowRepo{workflows: map[string]*engine.Workflow{workflow.ID: workflow}}
 	eventStoreImpl := eventstore.NewMongoEventStore(db, "events")
 
-	// 6. Initialize Orchestrator (publishes to scheduler subject)
+	// 6. Initialize Orchestrator with JoinStateManager
+	joinStore := engine.NewInMemoryJoinStateStore()
+	joinManager := engine.NewJoinStateManager(joinStore)
+
 	orchestratorPub := eventbus.NewNATSEventBus(js, "workflow.events.scheduler", "orchestrator-pub", eventbus.WithLogger(logger))
 	orchestratorSub := eventbus.NewNATSEventBus(js, "workflow.events.execution", "orchestrator", eventbus.WithLogger(logger))
 
 	orchestrator := engine.NewOrchestrator(
 		eventStoreImpl, orchestratorPub, orchestratorSub, workflowRepo,
 		engine.WithOrchestratorLogger(logger),
+		engine.WithJoinStateManager(joinManager), // Inject manager
 	)
 
 	// 7. Initialize Scheduler
@@ -112,7 +119,7 @@ func main() {
 		scheduler.WithSchedulerLogger(logger),
 	)
 
-	// 8. Initialize Workers (these could be in separate processes/containers)
+	// 8. Initialize Workers
 	resultPub := eventbus.NewNATSEventBus(js, "workflow.events.results", "worker-results", eventbus.WithLogger(logger))
 
 	startWorker := worker.NewWorker(
@@ -130,38 +137,20 @@ func main() {
 		engine.ActionNode,
 		func(ctx context.Context, input, params map[string]any) (engine.NodeResult, error) {
 			logger.InfoContext(ctx, "executing ACTION node", slog.Any("params", params))
-			output := make(map[string]any)
-			for k, v := range input {
-				output[k] = v
-			}
-			for k, v := range params {
-				output[k] = v
-			}
-			return engine.NodeResult{Output: output, Port: engine.DefaultPort}, nil
+			return engine.NodeResult{Output: map[string]any{"processed": true}, Port: engine.DefaultPort}, nil
 		},
 		eventbus.NewNATSEventBus(js, "workflow.nodes.ActionNode", "worker-action", eventbus.WithLogger(logger)),
 		resultPub,
 		worker.WithWorkerLogger(logger),
 	)
 
-	ifWorker := worker.NewWorker(
-		engine.IfNode,
+	joinWorker := worker.NewWorker(
+		engine.JoinNode,
 		func(ctx context.Context, input, params map[string]any) (engine.NodeResult, error) {
-			threshold := toFloat64(params["threshold"])
-			value := toFloat64(input["value"])
-
-			logger.InfoContext(ctx, "evaluating IF condition",
-				slog.Float64("value", value),
-				slog.Float64("threshold", threshold),
-			)
-
-			port := engine.PortFalse
-			if value >= threshold {
-				port = engine.PortTrue
-			}
-			return engine.NodeResult{Output: input, Port: port}, nil
+			logger.InfoContext(ctx, "executing JOIN node", slog.Any("input", input))
+			return engine.NodeResult{Output: input, Port: engine.DefaultPort}, nil
 		},
-		eventbus.NewNATSEventBus(js, "workflow.nodes.IfNode", "worker-if", eventbus.WithLogger(logger)),
+		eventbus.NewNATSEventBus(js, "workflow.nodes.JoinNode", "worker-join", eventbus.WithLogger(logger)),
 		resultPub,
 		worker.WithWorkerLogger(logger),
 	)
@@ -170,37 +159,20 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go func() {
-		if err := orchestrator.Start(ctx); err != nil {
-			logger.Error("orchestrator error", slog.Any("error", err))
-		}
-	}()
+	components := []interface{ Start(context.Context) error }{
+		orchestrator, sched, startWorker, actionWorker, joinWorker,
+	}
 
-	go func() {
-		if err := sched.Start(ctx); err != nil {
-			logger.Error("scheduler error", slog.Any("error", err))
-		}
-	}()
+	for _, c := range components {
+		component := c
+		go func() {
+			if err := component.Start(ctx); err != nil {
+				logger.Error("component error", slog.Any("error", err))
+			}
+		}()
+	}
 
-	go func() {
-		if err := startWorker.Start(ctx); err != nil {
-			logger.Error("start worker error", slog.Any("error", err))
-		}
-	}()
-
-	go func() {
-		if err := actionWorker.Start(ctx); err != nil {
-			logger.Error("action worker error", slog.Any("error", err))
-		}
-	}()
-
-	go func() {
-		if err := ifWorker.Start(ctx); err != nil {
-			logger.Error("if worker error", slog.Any("error", err))
-		}
-	}()
-
-	// 10. Trigger workflow execution
+	// 10. Trigger workflow
 	time.Sleep(1 * time.Second)
 	executionID := fmt.Sprintf("exec-%d", time.Now().Unix())
 	logger.Info("triggering execution", slog.String("execution_id", executionID))
@@ -211,8 +183,8 @@ func main() {
 	startEvent.SetType(engine.ExecutionStarted)
 	startEvent.SetSubject(executionID)
 	_ = startEvent.SetData(cloudevents.ApplicationJSON, engine.ExecutionStartedData{
-		WorkflowID: conditionalWorkflow.ID,
-		InputData:  map[string]any{"value": 15}, // Will take "true" path
+		WorkflowID: workflow.ID,
+		InputData:  map[string]any{"init": "value"},
 	})
 
 	if err := eventStoreImpl.Append(ctx, startEvent); err != nil {
@@ -241,17 +213,4 @@ func (r *InMemoryWorkflowRepo) GetByID(_ context.Context, id string) (*engine.Wo
 		return w, nil
 	}
 	return nil, fmt.Errorf("workflow %s not found", id)
-}
-
-func toFloat64(v any) float64 {
-	switch val := v.(type) {
-	case float64:
-		return val
-	case int:
-		return float64(val)
-	case int64:
-		return float64(val)
-	default:
-		return 0
-	}
 }
