@@ -38,5 +38,3 @@ go.work.sum
 # Build artifacts
 dist/
 tmp/
-
-.agent
