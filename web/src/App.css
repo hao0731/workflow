@@ -1,0 +1,184 @@
+:root {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  line-height: 1.5;
+  color: #f3f4f6;
+  background-color: #111827;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem 2rem;
+  background: #1f2937;
+  border-bottom: 1px solid #374151;
+}
+
+.header h1 {
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+.main {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+.sidebar {
+  width: 280px;
+  background: #1f2937;
+  border-right: 1px solid #374151;
+  overflow-y: auto;
+  padding: 1rem;
+}
+
+.graph-container {
+  flex: 1;
+  background: #111827;
+}
+
+/* Workflow Selector */
+.workflow-selector {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.workflow-selector select {
+  padding: 0.5rem 1rem;
+  background: #374151;
+  color: #f3f4f6;
+  border: 1px solid #4b5563;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.875rem;
+}
+
+/* Execution List */
+.execution-list h3 {
+  font-size: 0.875rem;
+  color: #9ca3af;
+  margin-bottom: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.execution-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  margin-bottom: 0.5rem;
+  background: #374151;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.execution-item:hover {
+  background: #4b5563;
+}
+
+.execution-item.selected {
+  background: #3b82f6;
+}
+
+.execution-item .status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.execution-item .status-dot.completed {
+  background: #22c55e;
+}
+
+.execution-item .status-dot.running {
+  background: #3b82f6;
+  animation: pulse 1s infinite;
+}
+
+.execution-item .status-dot.failed {
+  background: #ef4444;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+/* Node Details Panel */
+.node-details {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: #1f2937;
+  border-top: 1px solid #374151;
+  padding: 1rem 2rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  animation: slideUp 0.2s ease-out;
+}
+
+@keyframes slideUp {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
+
+.node-details .info {
+  display: flex;
+  gap: 2rem;
+}
+
+.node-details .label {
+  color: #9ca3af;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+}
+
+.node-details .value {
+  font-weight: 600;
+}
+
+.node-details .close-btn {
+  background: transparent;
+  border: none;
+  color: #9ca3af;
+  font-size: 1.5rem;
+  cursor: pointer;
+}
+
+/* Status badges */
+.status-badge {
+  display: inline-block;
+  padding: 0.25rem 0.75rem;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.status-badge.pending { background: #374151; color: #9ca3af; }
+.status-badge.scheduled { background: #1e40af; color: #93c5fd; }
+.status-badge.completed { background: #166534; color: #86efac; }
+.status-badge.failed { background: #991b1b; color: #fca5a5; }
+
+/* React Flow overrides */
+.react-flow__attribution {
+  display: none !important;
+}

@@ -47,3 +47,63 @@ func (s *MongoEventStore) GetBySubject(ctx context.Context, subject string) ([]c
 	}
 	return events, nil
 }
+
+// GetExecutionsByWorkflow returns execution summaries for a given workflow ID.
+// It finds all execution.started events and derives status from execution.completed/failed events.
+func (s *MongoEventStore) GetExecutionsByWorkflow(ctx context.Context, workflowID string) ([]ExecutionSummary, error) {
+	// Find all execution.started events for this workflow
+	filter := map[string]any{
+		"type":             "orchestration.execution.started",
+		"data.workflow_id": workflowID,
+	}
+
+	cursor, err := s.collection.Find(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	var startEvents []StoredEvent
+	if err := cursor.All(ctx, &startEvents); err != nil {
+		return nil, err
+	}
+
+	summaries := make([]ExecutionSummary, 0, len(startEvents))
+	for _, se := range startEvents {
+		execID := se.Subject
+		status := "running"
+
+		// Check if execution completed or failed
+		statusEvents, err := s.collection.Find(ctx, map[string]any{
+			"subject": execID,
+			"type": map[string]any{
+				"$in": []string{
+					"orchestration.execution.completed",
+					"orchestration.execution.failed",
+				},
+			},
+		})
+		if err == nil {
+			var statusEvts []StoredEvent
+			if statusEvents.All(ctx, &statusEvts) == nil && len(statusEvts) > 0 {
+				for _, evt := range statusEvts {
+					if evt.Type == "orchestration.execution.completed" {
+						status = "completed"
+					} else if evt.Type == "orchestration.execution.failed" {
+						status = "failed"
+					}
+				}
+			}
+			statusEvents.Close(ctx)
+		}
+
+		summaries = append(summaries, ExecutionSummary{
+			ID:         execID,
+			WorkflowID: workflowID,
+			Status:     status,
+			StartedAt:  se.Time,
+		})
+	}
+
+	return summaries, nil
+}

@@ -19,10 +19,19 @@ type StoredEvent struct {
 	Extensions      map[string]any `bson:"extensions,omitempty"`
 }
 
+// ExecutionSummary is a lightweight representation of an execution for API responses.
+type ExecutionSummary struct {
+	ID         string    `json:"id"`
+	WorkflowID string    `json:"workflow_id"`
+	Status     string    `json:"status"`
+	StartedAt  time.Time `json:"started_at"`
+}
+
 // EventStore handles persistence of CloudEvents.
 type EventStore interface {
 	Append(ctx context.Context, event cloudevents.Event) error
 	GetBySubject(ctx context.Context, subject string) ([]cloudevents.Event, error)
+	GetExecutionsByWorkflow(ctx context.Context, workflowID string) ([]ExecutionSummary, error)
 }
 
 // FromCloudEvent converts a CloudEvents event to a StoredEvent.

@@ -19,13 +19,29 @@ const (
 	JoinAny JoinOperator = "any" // Wait for ANY predecessor (OR)
 )
 
+// TriggerType defines how a workflow can be started.
+type TriggerType string
+
+const (
+	TriggerManual TriggerType = "manual" // Started via API call
+	TriggerEvent  TriggerType = "event"  // Started by marketplace event
+)
+
+// Trigger configures how a StartNode is activated.
+type Trigger struct {
+	Type     TriggerType    `json:"type"`
+	Criteria map[string]any `json:"criteria,omitempty"`  // e.g., {"event_name": "order.created", "domain": "ecommerce"}
+	InputMap map[string]any `json:"input_map,omitempty"` // Maps event fields to workflow inputs
+}
+
 type NodeType string
 
 const (
-	StartNode  NodeType = "StartNode"
-	ActionNode NodeType = "ActionNode"
-	IfNode     NodeType = "IfNode"
-	JoinNode   NodeType = "JoinNode" // New: waits for multiple inputs
+	StartNode    NodeType = "StartNode"
+	ActionNode   NodeType = "ActionNode"
+	IfNode       NodeType = "IfNode"
+	JoinNode     NodeType = "JoinNode"     // Waits for multiple inputs
+	PublishEvent NodeType = "PublishEvent" // Publishes to marketplace
 )
 
 type Node struct {
@@ -33,6 +49,7 @@ type Node struct {
 	Type       NodeType       `json:"type"`
 	Name       string         `json:"name"`
 	Parameters map[string]any `json:"parameters"`
+	Trigger    *Trigger       `json:"trigger,omitempty"` // Only for StartNode
 }
 
 // JoinConfig returns join configuration from node parameters.
@@ -56,6 +73,16 @@ func (n *Node) JoinConfig() (JoinOperator, []string) {
 	}
 
 	return op, inputs
+}
+
+// GetEventTrigger returns the event trigger criteria if this is an event-triggered start node.
+func (n *Node) GetEventTrigger() (eventName, domain string, ok bool) {
+	if n.Type != StartNode || n.Trigger == nil || n.Trigger.Type != TriggerEvent {
+		return "", "", false
+	}
+	eventName, _ = n.Trigger.Criteria["event_name"].(string)
+	domain, _ = n.Trigger.Criteria["domain"].(string)
+	return eventName, domain, eventName != ""
 }
 
 type Connection struct {
@@ -133,4 +160,14 @@ func (w *Workflow) GetStartNode() *Node {
 		}
 	}
 	return nil
+}
+
+// HasEventTrigger returns true if this workflow has a StartNode with an event trigger.
+func (w *Workflow) HasEventTrigger() bool {
+	start := w.GetStartNode()
+	if start == nil {
+		return false
+	}
+	_, _, ok := start.GetEventTrigger()
+	return ok
 }

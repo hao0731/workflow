@@ -33,7 +33,7 @@ func Load() *Config {
 	return &Config{
 		// Application
 		Env:   getEnv("APP_ENV", "development"),
-		Port:  getEnv("PORT", "8080"),
+		Port:  getEnv("PORT", "8081"),
 		Debug: getBoolEnv("DEBUG", false),
 
 		// MongoDB

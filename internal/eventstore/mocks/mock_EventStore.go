@@ -7,6 +7,7 @@ package mocks
 import (
 	"context"
 
+	"github.com/cheriehsieh/orchestration/internal/eventstore"
 	"github.com/cloudevents/sdk-go/v2"
 	mock "github.com/stretchr/testify/mock"
 )
@@ -159,6 +160,74 @@ func (_c *MockEventStore_GetBySubject_Call) Return(vs []v2.Event, err error) *Mo
 }
 
 func (_c *MockEventStore_GetBySubject_Call) RunAndReturn(run func(ctx context.Context, subject string) ([]v2.Event, error)) *MockEventStore_GetBySubject_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// GetExecutionsByWorkflow provides a mock function for the type MockEventStore
+func (_mock *MockEventStore) GetExecutionsByWorkflow(ctx context.Context, workflowID string) ([]eventstore.ExecutionSummary, error) {
+	ret := _mock.Called(ctx, workflowID)
+
+	if len(ret) == 0 {
+		panic("no return value specified for GetExecutionsByWorkflow")
+	}
+
+	var r0 []eventstore.ExecutionSummary
+	var r1 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context, string) ([]eventstore.ExecutionSummary, error)); ok {
+		return returnFunc(ctx, workflowID)
+	}
+	if returnFunc, ok := ret.Get(0).(func(context.Context, string) []eventstore.ExecutionSummary); ok {
+		r0 = returnFunc(ctx, workflowID)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).([]eventstore.ExecutionSummary)
+		}
+	}
+	if returnFunc, ok := ret.Get(1).(func(context.Context, string) error); ok {
+		r1 = returnFunc(ctx, workflowID)
+	} else {
+		r1 = ret.Error(1)
+	}
+	return r0, r1
+}
+
+// MockEventStore_GetExecutionsByWorkflow_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'GetExecutionsByWorkflow'
+type MockEventStore_GetExecutionsByWorkflow_Call struct {
+	*mock.Call
+}
+
+// GetExecutionsByWorkflow is a helper method to define mock.On call
+//   - ctx context.Context
+//   - workflowID string
+func (_e *MockEventStore_Expecter) GetExecutionsByWorkflow(ctx interface{}, workflowID interface{}) *MockEventStore_GetExecutionsByWorkflow_Call {
+	return &MockEventStore_GetExecutionsByWorkflow_Call{Call: _e.mock.On("GetExecutionsByWorkflow", ctx, workflowID)}
+}
+
+func (_c *MockEventStore_GetExecutionsByWorkflow_Call) Run(run func(ctx context.Context, workflowID string)) *MockEventStore_GetExecutionsByWorkflow_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 string
+		if args[1] != nil {
+			arg1 = args[1].(string)
+		}
+		run(
+			arg0,
+			arg1,
+		)
+	})
+	return _c
+}
+
+func (_c *MockEventStore_GetExecutionsByWorkflow_Call) Return(executionSummarys []eventstore.ExecutionSummary, err error) *MockEventStore_GetExecutionsByWorkflow_Call {
+	_c.Call.Return(executionSummarys, err)
+	return _c
+}
+
+func (_c *MockEventStore_GetExecutionsByWorkflow_Call) RunAndReturn(run func(ctx context.Context, workflowID string) ([]eventstore.ExecutionSummary, error)) *MockEventStore_GetExecutionsByWorkflow_Call {
 	_c.Call.Return(run)
 	return _c
 }

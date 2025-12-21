@@ -20,6 +20,7 @@ import (
 	"github.com/cheriehsieh/orchestration/internal/engine"
 	"github.com/cheriehsieh/orchestration/internal/eventbus"
 	"github.com/cheriehsieh/orchestration/internal/eventstore"
+	"github.com/cheriehsieh/orchestration/internal/marketplace"
 	"github.com/cheriehsieh/orchestration/internal/scheduler"
 	"github.com/cheriehsieh/orchestration/internal/worker"
 )
@@ -30,9 +31,8 @@ func main() {
 
 	// 2. Setup logger
 	logger := config.SetupLogger(cfg.Env)
-	logger.Info("starting workflow engine",
+	logger.Info("starting workflow engine with Event Marketplace",
 		slog.String("env", cfg.Env),
-		slog.Bool("debug", cfg.Debug),
 	)
 
 	// 3. Connect to MongoDB
@@ -42,9 +42,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer func() {
-		if err := client.Disconnect(context.Background()); err != nil {
-			logger.Error("failed to disconnect MongoDB", slog.Any("error", err))
-		}
+		_ = client.Disconnect(context.Background())
 	}()
 	db := client.Database(cfg.MongoDatabase)
 
@@ -66,36 +64,87 @@ func main() {
 	streams := []nats.StreamConfig{
 		{Name: "WORKFLOW_EVENTS", Subjects: []string{"workflow.events.>"}},
 		{Name: "WORKFLOW_NODES", Subjects: []string{"workflow.nodes.>"}},
+		{Name: "MARKETPLACE", Subjects: []string{"marketplace.>"}},
 	}
-	for _, cfg := range streams {
-		if _, err := js.AddStream(&cfg); err != nil {
-			logger.Debug("stream may already exist", slog.String("stream", cfg.Name), slog.Any("error", err))
+	for _, streamCfg := range streams {
+		if _, err := js.AddStream(&streamCfg); err != nil {
+			logger.Debug("stream may already exist", slog.String("stream", streamCfg.Name))
 		}
 	}
 
-	// 5. Define a conditional workflow with Join
-	workflow := &engine.Workflow{
-		ID: "join-workflow-1",
+	// 5. Initialize Event Marketplace Registry
+	eventRegistry := marketplace.NewInMemoryEventRegistry()
+
+	// Register a public event
+	_ = eventRegistry.Register(context.Background(), &marketplace.EventDefinition{
+		Name:        "order_created",
+		Domain:      "ecommerce",
+		Description: "Fired when a new order is placed",
+		Schema:      map[string]any{"order_id": "string", "total": "number"},
+	})
+
+	// 6. Define Workflows
+	// Publisher Workflow: Creates an order and publishes to marketplace
+	publisherWorkflow := &engine.Workflow{
+		ID: "order-service",
 		Nodes: []engine.Node{
 			{ID: "start", Type: engine.StartNode, Name: "Start"},
-			{ID: "parallel-1", Type: engine.ActionNode, Name: "Parallel 1", Parameters: map[string]any{"msg": "p1"}},
-			{ID: "parallel-2", Type: engine.ActionNode, Name: "Parallel 2", Parameters: map[string]any{"msg": "p2"}},
-			{ID: "join", Type: engine.JoinNode, Name: "Join"},
-			{ID: "end", Type: engine.ActionNode, Name: "End"},
+			{ID: "create-order", Type: engine.ActionNode, Name: "Create Order"},
+			{
+				ID:   "publish-event",
+				Type: engine.PublishEvent,
+				Name: "Publish Order Created",
+				Parameters: map[string]any{
+					"event_name": "order_created",
+					"domain":     "ecommerce",
+					"payload": map[string]any{
+						"order_id": "{{.input.order_id}}",
+						"total":    "{{.input.total}}",
+					},
+				},
+			},
 		},
 		Connections: []engine.Connection{
-			{FromNode: "start", ToNode: "parallel-1"},
-			{FromNode: "start", ToNode: "parallel-2"},
-			{FromNode: "parallel-1", ToNode: "join", ToPort: "p1_out"},
-			{FromNode: "parallel-2", ToNode: "join", ToPort: "p2_out"},
-			{FromNode: "join", ToNode: "end"},
+			{FromNode: "start", ToNode: "create-order"},
+			{FromNode: "create-order", ToNode: "publish-event"},
 		},
 	}
 
-	workflowRepo := &InMemoryWorkflowRepo{workflows: map[string]*engine.Workflow{workflow.ID: workflow}}
+	// Subscriber Workflow: Triggered by order_created event
+	subscriberWorkflow := &engine.Workflow{
+		ID: "shipping-service",
+		Nodes: []engine.Node{
+			{
+				ID:   "start",
+				Type: engine.StartNode,
+				Name: "Event Trigger",
+				Trigger: &engine.Trigger{
+					Type: engine.TriggerEvent,
+					Criteria: map[string]any{
+						"event_name": "order_created",
+						"domain":     "ecommerce",
+					},
+				},
+			},
+			{ID: "prepare-shipment", Type: engine.ActionNode, Name: "Prepare Shipment"},
+			{ID: "notify-customer", Type: engine.ActionNode, Name: "Notify Customer"},
+		},
+		Connections: []engine.Connection{
+			{FromNode: "start", ToNode: "prepare-shipment"},
+			{FromNode: "prepare-shipment", ToNode: "notify-customer"},
+		},
+	}
+
+	workflowRepo := &InMemoryWorkflowRepo{
+		workflows: map[string]*engine.Workflow{
+			publisherWorkflow.ID:  publisherWorkflow,
+			subscriberWorkflow.ID: subscriberWorkflow,
+		},
+	}
+
 	eventStoreImpl := eventstore.NewMongoEventStore(db, "events")
 
-	// 6. Initialize Orchestrator with JoinStateManager
+	// 7. Initialize Orchestrator
 	joinStore := engine.NewInMemoryJoinStateStore()
 	joinManager := engine.NewJoinStateManager(joinStore)
 
@@ -105,10 +154,10 @@ func main() {
 	orchestrator := engine.NewOrchestrator(
 		eventStoreImpl, orchestratorPub, orchestratorSub, workflowRepo,
 		engine.WithOrchestratorLogger(logger),
-		engine.WithJoinStateManager(joinManager), // Inject manager
+		engine.WithJoinStateManager(joinManager),
 	)
 
-	// 7. Initialize Scheduler
+	// 8. Initialize Scheduler
 	schedulerSub := eventbus.NewNATSEventBus(js, "workflow.events.scheduler", "scheduler", eventbus.WithLogger(logger))
 	schedulerPub := eventbus.NewNATSEventBus(js, "workflow.events.execution", "scheduler-pub", eventbus.WithLogger(logger))
 	resultSub := eventbus.NewNATSEventBus(js, "workflow.events.results", "scheduler-results", eventbus.WithLogger(logger))
@@ -119,13 +168,22 @@ func main() {
 		scheduler.WithSchedulerLogger(logger),
 	)
 
-	// 8. Initialize Workers
+	// 9. Initialize Event Router (Marketplace)
+	eventRouter := scheduler.NewEventRouter(
+		js, workflowRepo, eventStoreImpl, orchestratorSub,
+		scheduler.WithEventRouterLogger(logger),
+	)
+
+	// 10. Initialize Workers
 	resultPub := eventbus.NewNATSEventBus(js, "workflow.events.results", "worker-results", eventbus.WithLogger(logger))
+
+	// PublishEvent executor
+	publishExecutor := engine.NewPublishEventExecutor(js, eventRegistry, engine.WithPublishEventLogger(logger))
 
 	startWorker := worker.NewWorker(
 		engine.StartNode,
 		func(ctx context.Context, input, params map[string]any) (engine.NodeResult, error) {
-			logger.InfoContext(ctx, "executing START node")
+			logger.InfoContext(ctx, "▶ START node executed")
 			return engine.NodeResult{Output: input, Port: engine.DefaultPort}, nil
 		},
 		eventbus.NewNATSEventBus(js, "workflow.nodes.StartNode", "worker-start", eventbus.WithLogger(logger)),
@@ -136,31 +194,32 @@ func main() {
 	actionWorker := worker.NewWorker(
 		engine.ActionNode,
 		func(ctx context.Context, input, params map[string]any) (engine.NodeResult, error) {
-			logger.InfoContext(ctx, "executing ACTION node", slog.Any("params", params))
-			return engine.NodeResult{Output: map[string]any{"processed": true}, Port: engine.DefaultPort}, nil
+			logger.InfoContext(ctx, "⚙ ACTION node executed", slog.Any("input", input))
+			return engine.NodeResult{Output: input, Port: engine.DefaultPort}, nil
 		},
 		eventbus.NewNATSEventBus(js, "workflow.nodes.ActionNode", "worker-action", eventbus.WithLogger(logger)),
 		resultPub,
 		worker.WithWorkerLogger(logger),
 	)
 
-	joinWorker := worker.NewWorker(
-		engine.JoinNode,
+	publishWorker := worker.NewWorker(
+		engine.PublishEvent,
 		func(ctx context.Context, input, params map[string]any) (engine.NodeResult, error) {
-			logger.InfoContext(ctx, "executing JOIN node", slog.Any("input", input))
-			return engine.NodeResult{Output: input, Port: engine.DefaultPort}, nil
+			// Get execution ID from context or generate
+			execID := uuid.New().String()
+			return publishExecutor.Execute(ctx, execID, input, params)
 		},
-		eventbus.NewNATSEventBus(js, "workflow.nodes.JoinNode", "worker-join", eventbus.WithLogger(logger)),
+		eventbus.NewNATSEventBus(js, "workflow.nodes.PublishEvent", "worker-publish", eventbus.WithLogger(logger)),
 		resultPub,
 		worker.WithWorkerLogger(logger),
 	)
 
-	// 9. Start all components
+	// 11. Start all components
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	components := []interface{ Start(context.Context) error }{
-		orchestrator, sched, startWorker, actionWorker, joinWorker,
+		orchestrator, sched, eventRouter, startWorker, actionWorker, publishWorker,
 	}
 
 	for _, c := range components {
@@ -172,10 +231,13 @@ func main() {
 		}()
 	}
 
-	// 10. Trigger workflow
-	time.Sleep(1 * time.Second)
+	// 12. Trigger the Publisher Workflow
+	time.Sleep(2 * time.Second)
 	executionID := fmt.Sprintf("exec-%d", time.Now().Unix())
-	logger.Info("triggering execution", slog.String("execution_id", executionID))
+	logger.Info("🚀 Triggering Publisher Workflow (Order Service)",
+		slog.String("execution_id", executionID),
+		slog.String("workflow_id", publisherWorkflow.ID),
+	)
 
 	startEvent := cloudevents.NewEvent()
 	startEvent.SetID(uuid.New().String())
@@ -183,8 +245,11 @@ func main() {
 	startEvent.SetType(engine.ExecutionStarted)
 	startEvent.SetSubject(executionID)
 	_ = startEvent.SetData(cloudevents.ApplicationJSON, engine.ExecutionStartedData{
-		WorkflowID: workflow.ID,
-		InputData:  map[string]any{"init": "value"},
+		WorkflowID: publisherWorkflow.ID,
+		InputData: map[string]any{
+			"order_id": "ORD-12345",
+			"total":    199.99,
+		},
 	})
 
 	if err := eventStoreImpl.Append(ctx, startEvent); err != nil {
@@ -196,7 +261,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 11. Wait for shutdown signal
+	logger.Info("📋 Expected flow:",
+		slog.String("1", "Order Service starts"),
+		slog.String("2", "PublishEvent node fires 'order_created' to marketplace"),
+		slog.String("3", "EventRouter catches event, starts Shipping Service"),
+		slog.String("4", "Shipping Service processes event"),
+	)
+
+	// 13. Wait for shutdown signal
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan
@@ -213,4 +285,25 @@ func (r *InMemoryWorkflowRepo) GetByID(_ context.Context, id string) (*engine.Wo
 		return w, nil
 	}
 	return nil, fmt.Errorf("workflow %s not found", id)
+}
+
+// FindByEventTrigger finds workflows that match the given event trigger.
+func (r *InMemoryWorkflowRepo) FindByEventTrigger(_ context.Context, eventName, domain string) ([]*engine.Workflow, error) {
+	var matches []*engine.Workflow
+	for _, wf := range r.workflows {
+		start := wf.GetStartNode()
+		if start == nil || start.Trigger == nil {
+			continue
+		}
+		if start.Trigger.Type != engine.TriggerEvent {
+			continue
+		}
+		triggerEvent, _ := start.Trigger.Criteria["event_name"].(string)
+		triggerDomain, _ := start.Trigger.Criteria["domain"].(string)
+
+		if triggerEvent == eventName && triggerDomain == domain {
+			matches = append(matches, wf)
+		}
+	}
+	return matches, nil
 }

@@ -250,7 +250,7 @@ When all predecessors complete, the join node is scheduled with combined inputs.
 | Service | Port | Command |
 |---------|------|---------|
 | Engine | - | `go run ./cmd/engine` |
-| Registry | 8080 | `go run ./cmd/registry` |
+| Registry | 8082 | `go run ./cmd/registry` |
 
 ### 7.2 Dependencies
 
@@ -264,7 +264,7 @@ When all predecessors complete, the join node is scheduled with combined inputs.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `APP_ENV` | `development` | Environment (development/production) |
-| `PORT` | `8080` | HTTP server port |
+| `PORT` | `8081` | HTTP server port |
 | `MONGO_URI` | `mongodb://localhost:27017` | MongoDB connection string |
 | `NATS_URL` | `nats://localhost:4222` | NATS server URL |
 | `JWT_SECRET` | - | JWT signing secret |
@@ -293,7 +293,88 @@ orchestration/
 
 ---
 
-## 9. WebSocket Proxy
+## 9. Event Marketplace (Choreography)
+
+The Event Marketplace allows workflows to interact via public, discoverable events. This creates a loosely coupled "Event Mesh" where workflows can publish state and others can be triggered by it.
+
+### 9.1 Core Concepts
+
+1.  **Public Event Bus**: A dedicated NATS subject space (`marketplace.>`) for inter-workflow communication.
+2.  **Event Registry**: A catalog of defined events (Topic, Schema, Description) so users can browse what triggers are available.
+3.  **Event Triggers**: Workflows can configure their `StartNode` to subscribe to specific marketplace events.
+
+### 9.2 Architecture
+
+```mermaid
+graph LR
+    subgraph "Publisher Workflow"
+        Step1[Action] --> PubNode[Publish Event Node]
+    end
+
+    subgraph "Event Marketplace"
+        Bus((Public Event Bus))
+        Registry[Event Registry]
+    end
+
+    subgraph "Subscriber Workflow"
+        Trigger[Start Node<br/>Event Trigger] --> Step2[Action]
+    end
+
+    PubNode -- "Publish<br/>marketplace.orders.created" --> Bus
+    PubNode -. "Register Def" .-> Registry
+    
+    Bus -- "Dispatch" --> Trigger
+    Trigger -. "Lookup Schema" .-> Registry
+```
+
+### 9.3 Data Models
+
+#### Public Event Definition
+```go
+type EventDefinition struct {
+    Name        string `json:"name"`        // e.g., "orders.created"
+    Domain      string `json:"domain"`      // e.g., "ecommerce"
+    Description string `json:"description"`
+    Schema      any    `json:"schema"`      // JSON Schema for payload
+}
+```
+
+#### Publish Node Configuration
+```json
+{
+    "type": "PublishEvent",
+    "parameters": {
+        "event_name": "orders.created",
+        "domain": "ecommerce",
+        "payload": { "order_id": "{{.input.id}}", "total": "{{.input.total}}" }
+    }
+}
+```
+
+#### Event Trigger (Start Node)
+```json
+{
+    "id": "start",
+    "type": "StartNode",
+    "trigger": {
+        "type": "event",
+        "criteria": {
+            "event_name": "orders.created",
+            "domain": "ecommerce"
+        }
+    }
+}
+```
+
+### 9.4 Event Router
+The **Scheduler** (or a dedicated component) subscribes to `marketplace.>` and:
+1.  Receives a public event.
+2.  Queries the **Workflow Repository** for workflows with matching Event Triggers.
+3.  Spawns a new execution for each matching workflow, injecting the event payload as input.
+
+---
+
+## 10. WebSocket Proxy
 
 Third-party workers connect via WebSocket since they cannot access the managed NATS directly.
 
@@ -346,10 +427,10 @@ Third-party workers connect via WebSocket since they cannot access the managed N
 
 ---
 
-## 10. Future Considerations
+## 11. Future Considerations
 
-1. **NATS Auth Callout** - Tighter integration for worker authentication
-2. **Workflow Versioning** - Immutable workflow definitions
-3. **Retry Policies** - Configurable retry with backoff
-4. **Workflow UI** - Visual editor and monitoring dashboard
-5. **Join Operators** - Support for `any` (OR) in addition to current `all` (AND)
+1.  **NATS Auth Callout** - Tighter integration for worker authentication
+2.  **Workflow Versioning** - Immutable workflow definitions
+3.  **Retry Policies** - Configurable retry with backoff
+4.  **Workflow UI** - Visual editor and monitoring dashboard
+5.  **Join Operators** - Support for `any` (OR) in addition to current `all` (AND)
