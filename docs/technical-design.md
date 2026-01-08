@@ -3,6 +3,8 @@
 ## 1. Overview
 
 A distributed workflow orchestration engine inspired by n8n, built with event sourcing and NATS JetStream for reliable, scalable workflow execution.
+- Integrate all API providers and provide them more easier way to manage their users
+- Secure and self-service method to apply for third-party nodes (more easier node on-board)
 
 ### 1.1 Goals
 - Execute complex DAG-based workflows
