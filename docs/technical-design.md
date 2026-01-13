@@ -23,48 +23,174 @@ A distributed workflow orchestration engine inspired by n8n, built with event so
 ### 2.1 High-Level Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                           API Layer                                  │
-│  ┌─────────────────┐    ┌─────────────────┐    ┌────────────────┐  │
-│  │  Node Registry  │    │  Workflow API   │    │  Execution API │  │
-│  │  (Echo REST)    │    │  (Future)       │    │  (Future)      │  │
-│  └────────┬────────┘    └─────────────────┘    └────────────────┘  │
-└───────────┼─────────────────────────────────────────────────────────┘
-            │ JWT Token
-┌───────────┼─────────────────────────────────────────────────────────┐
-│           ▼           Core Engine Layer                              │
-│  ┌─────────────────┐    ┌─────────────────┐    ┌────────────────┐  │
-│  │   Orchestrator  │◄──►│    Scheduler    │◄──►│    Workers     │  │
-│  │  (DAG Traversal)│    │  (Dispatch)     │    │  (Execution)   │  │
-│  └────────┬────────┘    └────────┬────────┘    └────────┬───────┘  │
-└───────────┼──────────────────────┼──────────────────────┼───────────┘
-            │                      │                      │
-┌───────────┼──────────────────────┼──────────────────────┼───────────┐
-│           ▼                      ▼                      ▼           │
-│  ┌─────────────────────────────────────────────────────────────┐   │
-│  │                    NATS JetStream                            │   │
-│  │  workflow.events.execution | workflow.events.scheduler       │   │
-│  │  workflow.nodes.* | workflow.events.results                  │   │
-│  └─────────────────────────────────────────────────────────────┘   │
-│                              │                                      │
-│  ┌─────────────────────────────────────────────────────────────┐   │
-│  │                       MongoDB                                │   │
-│  │        events | node_registrations | workflows               │   │
-│  └─────────────────────────────────────────────────────────────┘   │
-│                        Infrastructure Layer                         │
-└─────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                              API Layer                                   │
+│  ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────────┐  │
+│  │  Node Registry  │    │  Workflow API   │    │  Execution API      │  │
+│  │  (Echo REST)    │    │  (Future)       │    │  (Future)           │  │
+│  └─────────────────┘    └─────────────────┘    └─────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         Core Engine Layer                                │
+│  ┌─────────────────┐              ┌─────────────────┐                   │
+│  │   Orchestrator  │◄────────────►│    Scheduler    │                   │
+│  │  (DAG Traversal)│  NATS Events │  (Dispatch)     │                   │
+│  └────────┬────────┘              └────────┬────────┘                   │
+└───────────┼────────────────────────────────┼────────────────────────────┘
+            │                                │
+            │         NATS JetStream         │
+            ▼                                ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         Infrastructure Layer                             │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │                  NATS JetStream (Hub Cluster)                    │   │
+│  │  workflow.events.execution | workflow.events.scheduler           │   │
+│  │  workflow.nodes.<type> | workflow.events.results                 │   │
+│  └───────────────────────────────┬─────────────────────────────────┘   │
+│                                  │ Leaf Node Connection                 │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │                        MongoDB                                   │   │
+│  │         events | node_registrations | workflows                  │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+└──────────────────────────────────┼──────────────────────────────────────┘
+                                   │
+                      ┌────────────┴────────────┐
+                      │  NATS Leaf Node Config  │
+                      │  • TLS + Credentials    │
+                      │  • Scoped subjects      │
+                      └────────────┬────────────┘
+                                   │
+┌──────────────────────────────────┼──────────────────────────────────────┐
+│                    Third-Party Workers (External Environments)          │
+│                                  │                                      │
+│  ┌───────────────────────────────┴───────────────────────────────────┐ │
+│  │              Worker-Side NATS (Leaf Node)                         │ │
+│  │  • Runs in third-party environment                                │ │
+│  │  • Connects to Hub as Leaf Node                                   │ │
+│  │  • Subjects: workflow.nodes.<type>, workflow.events.results       │ │
+│  └───────────────────────────────┬───────────────────────────────────┘ │
+│                                  │                                      │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐         │
+│  │  http-request   │  │   send-email    │  │  custom-node    │         │
+│  │  Worker @v1     │  │   Worker @v1    │  │  Worker @v1     │         │
+│  └─────────────────┘  └─────────────────┘  └─────────────────┘         │
+│                                                                          │
+│  • Workers connect to their local Leaf Node NATS                        │
+│  • Messages routed transparently to/from Hub cluster                    │
+│  • Subject access controlled by Leaf Node credentials                   │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
+
+**Communication Paths:**
+- **Core Engine ↔ Hub NATS**: Direct connection (Orchestrator, Scheduler)
+- **Hub NATS ↔ Leaf Node NATS**: Leaf Node connection (TLS + scoped credentials)
+- **External Workers ↔ Leaf Node NATS**: Standard NATS client connection (local)
 
 ### 2.2 Component Responsibilities
 
 | Component | Responsibility |
 |-----------|----------------|
-| **Orchestrator** | DAG traversal, node scheduling, execution lifecycle |
-| **Scheduler** | Dispatch to workers, status updates, node validation |
+| **Orchestrator** | DAG traversal, join state management, execution lifecycle |
+| **Scheduler** | Dispatch to workers, worker routing, node validation |
 | **Worker** | Node execution, result reporting |
 | **Node Registry** | Dynamic node registration, JWT auth, health checks |
 | **Event Store** | CloudEvents persistence (MongoDB) |
 | **Event Bus** | Event distribution (NATS JetStream) |
+
+### 2.3 Orchestrator vs Scheduler Separation
+
+The Orchestrator and Scheduler are designed as **separate services** communicating via NATS JetStream. This separation provides key architectural benefits.
+
+#### Responsibility Boundary
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                         ORCHESTRATOR                                 │
+│  "What to execute next"                                              │
+├─────────────────────────────────────────────────────────────────────┤
+│  • DAG traversal logic                                               │
+│  • Join node state tracking (PendingJoin)                           │
+│  • Conditional routing (output ports)                                │
+│  • Execution lifecycle (started → completed)                         │
+│  • Workflow definition lookup                                        │
+└──────────────────────────────┬──────────────────────────────────────┘
+                               │
+                    NATS JetStream
+               (NodeExecutionScheduled)
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                          SCHEDULER                                   │
+│  "How to execute it"                                                 │
+├─────────────────────────────────────────────────────────────────────┤
+│  • Route to correct worker by node type                              │
+│  • Validate node parameters against schema                           │
+│  • Handle worker timeouts and retries                                │
+│  • Load balance across worker instances                              │
+│  • Report results back to Orchestrator                               │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+#### Benefits of Separation
+
+| Benefit | Description |
+|---------|-------------|
+| **Independent Scaling** | Scale Orchestrator for more concurrent executions; scale Scheduler for more node throughput |
+| **Fault Isolation** | Scheduler overload doesn't corrupt Orchestrator's join states |
+| **Deployment Flexibility** | Deploy with different resource profiles (Orchestrator: memory-heavy, Scheduler: CPU-heavy) |
+| **Event Replay** | NATS JetStream enables debugging via event replay |
+| **Loose Coupling** | Services share no memory; communicate only via events |
+
+### 2.4 Scaling Guidelines
+
+#### Orchestrator Scaling
+
+| Factor | Scaling Trigger | Action |
+|--------|-----------------|--------|
+| Concurrent executions | High memory usage from PendingJoin states | Add instances, use distributed JoinStateStore |
+| Event processing lag | Backlog on `workflow.events.execution` | Add consumer instances |
+| Workflow complexity | Many join nodes per workflow | Increase memory per instance |
+
+**State Considerations:** When scaling Orchestrator horizontally, the JoinStateStore must be distributed (e.g., MongoDB or Redis) to ensure all instances see consistent join states.
+
+#### Scheduler Scaling
+
+| Factor | Scaling Trigger | Action |
+|--------|-----------------|--------|
+| Node throughput | High latency on `workflow.events.scheduler` | Add instances |
+| Worker pool size | Many registered node types | Add instances per node type |
+| Dispatch latency | Slow worker routing | Optimize node registry lookups |
+
+**Stateless Design:** Scheduler instances are stateless—scale freely without coordination.
+
+#### Worker Scaling
+
+| Factor | Scaling Trigger | Action |
+|--------|-----------------|--------|
+| Queue depth | Messages backing up on `workflow.nodes.<type>` | Add workers for that node type |
+| Execution time | Long-running nodes | Scale workers independently |
+
+```yaml
+# Example Kubernetes scaling configuration
+orchestrator:
+  replicas: 2
+  resources:
+    memory: 1Gi      # State-heavy (join tracking)
+    cpu: 500m
+
+scheduler:
+  replicas: 5
+  resources:
+    memory: 256Mi
+    cpu: 1000m       # Dispatch-heavy
+
+workers:
+  http-request:
+    replicas: 10     # High-volume node type
+  send-email:
+    replicas: 2      # Low-volume node type
+```
 
 ---
 
@@ -195,12 +321,50 @@ Join nodes wait for **all predecessors** to complete before executing, combining
 }
 ```
 
-#### State Tracking
-The Orchestrator maintains a `JoinState` map to track:
-- Which predecessors have completed
-- Their output data keyed by `ToPort`
+#### Join Node Synchronization Flow
 
-When all predecessors complete, the join node is scheduled with combined inputs.
+The Orchestrator manages join node synchronization through the following steps:
+
+```mermaid
+sequenceDiagram
+    participant P1 as Predecessor A<br/>(fetch-user)
+    participant P2 as Predecessor B<br/>(fetch-orders)
+    participant O as Orchestrator
+    participant S as Join State Store
+    participant J as Join Node
+
+    Note over O: Parallel execution begins
+
+    P1->>O: NodeCompleted (user data)
+    O->>S: Get join state
+    S-->>O: Not found (first arrival)
+    O->>S: Create state<br/>CompletedNodes: [A]<br/>Inputs: {user: ...}
+    Note over O: Not all predecessors done, wait
+
+    P2->>O: NodeCompleted (orders data)
+    O->>S: Get join state
+    S-->>O: Return state (version N)
+    O->>S: Update state<br/>CompletedNodes: [A, B]<br/>Inputs: {user: ..., orders: ...}
+    Note over O: All predecessors done!
+    O->>S: Delete state (cleanup)
+    O->>J: Schedule with combined inputs
+```
+
+**Key Concepts:**
+
+1. **State Tracking**: The Orchestrator maintains a `PendingJoin` state per join node per execution. This tracks:
+   - Which predecessor nodes have completed
+   - Their output data, keyed by the connection's `ToPort`
+
+2. **First Arrival Creates State**: When the first predecessor completes, a new join state is initialized with the list of required predecessors.
+
+3. **Subsequent Arrivals Update State**: Each completion updates the state with its output data and marks itself as done.
+
+4. **All Done → Schedule Join Node**: When all required predecessors are marked complete, the join node is scheduled with a combined input object containing all predecessor outputs keyed by `ToPort`.
+
+5. **Optimistic Concurrency**: State updates use version-based optimistic locking to handle concurrent completions safely.
+
+6. **Cleanup**: Once the join node is scheduled, the pending state is deleted.
 
 ---
 
@@ -374,56 +538,82 @@ The **Scheduler** (or a dedicated component) subscribes to `marketplace.>` and:
 
 ---
 
-## 10. WebSocket Proxy
+## 10. NATS Leaf Node (Worker Connection)
 
-Third-party workers connect via WebSocket since they cannot access the managed NATS directly.
+Third-party workers connect to the workflow engine via **NATS Leaf Nodes**. Each third-party environment runs its own NATS server configured as a Leaf Node that connects to the Hub cluster.
 
-### 9.1 Proxy Flow
+### 10.1 Leaf Node Architecture
 
 ```
-┌──────────────┐     ┌─────────────────────────────┐     ┌──────────────────┐
-│  Third-Party │     │     Node Registry           │     │  Managed NATS    │
-│  Worker      │     │     (WebSocket Proxy)       │     │  (Your API Key)  │
-└──────┬───────┘     └─────────────┬───────────────┘     └────────┬─────────┘
-       │                           │                              │
-       │ 1. WS Connect             │                              │
-       │    /ws/connect?token=JWT  │                              │
-       │══════════════════════════>│                              │
-       │                           │                              │
-       │                           │ 2. Subscribe to NATS         │
-       │                           │    (Platform API Key)        │
-       │                           │─────────────────────────────>│
-       │                           │                              │
-       │ 3. Receive dispatch       │                              │
-       │    events                 │<─────────────────────────────│
-       │<══════════════════════════│                              │
-       │                           │                              │
-       │ 4. Send result via WS     │                              │
-       │══════════════════════════>│                              │
-       │                           │ 5. Publish to results        │
-       │                           │─────────────────────────────>│
+┌──────────────────────────────────────────────────────────────────────────┐
+│                    Platform Infrastructure                                │
+│  ┌────────────────────────────────────────────────────────────────────┐  │
+│  │                   NATS Hub Cluster (JetStream)                      │  │
+│  │   workflow.events.* | workflow.nodes.*                              │  │
+│  └────────────────────────────────┬───────────────────────────────────┘  │
+└───────────────────────────────────┼──────────────────────────────────────┘
+                                    │
+                         Leaf Node Connections
+                         (TLS + Credentials)
+                                    │
+        ┌───────────────────────────┼───────────────────────────┐
+        │                           │                           │
+        ▼                           ▼                           ▼
+┌───────────────────┐    ┌───────────────────┐    ┌───────────────────┐
+│  Third-Party A    │    │  Third-Party B    │    │  Third-Party C    │
+│  Environment      │    │  Environment      │    │  Environment      │
+│ ┌───────────────┐ │    │ ┌───────────────┐ │    │ ┌───────────────┐ │
+│ │  Leaf Node    │ │    │ │  Leaf Node    │ │    │ │  Leaf Node    │ │
+│ │  NATS Server  │ │    │ │  NATS Server  │ │    │ │  NATS Server  │ │
+│ └───────┬───────┘ │    │ └───────┬───────┘ │    │ └───────┬───────┘ │
+│         │         │    │         │         │    │         │         │
+│ ┌───────┴───────┐ │    │ ┌───────┴───────┐ │    │ ┌───────┴───────┐ │
+│ │http-request@v1│ │    │ │send-email@v1  │ │    │ │custom-node@v1 │ │
+│ │    Worker     │ │    │ │    Worker     │ │    │ │    Worker     │ │
+│ └───────────────┘ │    │ └───────────────┘ │    │ └───────────────┘ │
+└───────────────────┘    └───────────────────┘    └───────────────────┘
 ```
 
-### 9.2 Message Format
+### 10.2 Connection Flow
 
-```json
-// Event from Proxy to Worker
-{
-    "type": "event",
-    "data": { /* CloudEvent JSON */ }
+1. **Registration**: Third-party registers their node type via Node Registry API
+2. **Credential Issuance**: Platform issues Leaf Node credentials scoped to specific subjects
+3. **Leaf Node Setup**: Third-party configures their NATS server as a Leaf Node
+4. **Worker Connection**: Workers connect to their local Leaf Node NATS
+5. **Message Routing**: Messages transparently routed between Leaf Node and Hub
+
+### 10.3 Leaf Node Configuration (Third-Party Side)
+
+```hcl
+# nats-server.conf (Third-Party Environment)
+leafnodes {
+    remotes [
+        {
+            url: "tls://hub.workflow-platform.io:7422"
+            credentials: "/path/to/worker.creds"
+        }
+    ]
 }
-
-// Result from Worker to Proxy
-{
-    "type": "result",
-    "data": { /* CloudEvent JSON */ }
-}
 ```
 
-### 9.3 Security
-- Workers authenticate via JWT token (query param or header)
-- Proxy subscribes only to the worker's registered subject
-- Results are forwarded to `workflow.events.results`
+### 10.4 Subject Permissions
+
+Leaf Node credentials are scoped to only the required subjects:
+
+| Direction | Subject Pattern | Purpose |
+|-----------|-----------------|---------|
+| **Subscribe** | `workflow.nodes.<type>.<version>` | Receive dispatch events |
+| **Publish** | `workflow.events.results` | Send execution results |
+
+### 10.5 Benefits of Leaf Node Architecture
+
+| Benefit | Description |
+|---------|-------------|
+| **Native NATS Protocol** | Workers use standard NATS clients (no custom proxy) |
+| **Low Latency** | Direct NATS message routing, no HTTP overhead |
+| **Subject Isolation** | Credentials scoped to specific subjects only |
+| **Local Resilience** | Leaf Node buffers during network partitions |
+| **Multi-Tenancy** | Each third-party has isolated Leaf Node credentials |
 
 ---
 
