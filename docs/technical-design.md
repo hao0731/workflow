@@ -466,6 +466,7 @@ The Event Marketplace allows workflows to interact via public, discoverable even
 1.  **Public Event Bus**: A dedicated NATS subject space (`marketplace.>`) for inter-workflow communication.
 2.  **Event Registry**: A catalog of defined events (Topic, Schema, Description) so users can browse what triggers are available.
 3.  **Event Triggers**: Workflows can configure their `StartNode` to subscribe to specific marketplace events.
+4.  **Governance**: Two-level approval workflow for event publication and subscription (Solace Event Portal pattern).
 
 ### 9.2 Architecture
 
@@ -478,6 +479,7 @@ graph LR
     subgraph "Event Marketplace"
         Bus((Public Event Bus))
         Registry[Event Registry]
+        Governance[Governance Service]
     end
 
     subgraph "Subscriber Workflow"
@@ -486,24 +488,185 @@ graph LR
 
     PubNode -- "Publish<br/>marketplace.orders.created" --> Bus
     PubNode -. "Register Def" .-> Registry
+    Registry -. "Approval Required" .-> Governance
     
-    Bus -- "Dispatch" --> Trigger
-    Trigger -. "Lookup Schema" .-> Registry
+    Bus -- "Dispatch<br/>(if approved)" --> Trigger
+    Trigger -. "Subscription Request" .-> Governance
 ```
 
-### 9.3 Data Models
+### 9.3 Governance Model (Solace Event Portal Pattern)
 
-#### Public Event Definition
+The governance model ensures controlled access to the Event Marketplace through two approval workflows.
+
+#### 9.3.1 Event Publication Approval
+
+Before an event can be published to the marketplace, it must be reviewed and approved by a **Platform Admin**.
+
+```
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│   Publisher     │     │ Event Registry  │     │ Platform Admin  │
+└────────┬────────┘     └────────┬────────┘     └────────┬────────┘
+         │                       │                       │
+         │ 1. Submit Event       │                       │
+         │    Definition         │                       │
+         │──────────────────────>│                       │
+         │                       │                       │
+         │                       │ 2. Store with         │
+         │                       │    status: PENDING    │
+         │                       │                       │
+         │                       │ 3. Request Review     │
+         │                       │──────────────────────>│
+         │                       │                       │
+         │                       │                       │ 4. Review
+         │                       │                       │   • Schema quality
+         │                       │                       │   • Naming conventions
+         │                       │                       │   • Compliance
+         │                       │                       │
+         │                       │ 5. Approve/Reject     │
+         │                       │<──────────────────────│
+         │                       │                       │
+         │ 6. Notification       │                       │
+         │   (APPROVED/REJECTED) │                       │
+         │<──────────────────────│                       │
+         │                       │                       │
+         │ 7. Can now publish    │                       │
+         │    to marketplace     │                       │
+```
+
+#### 9.3.2 Event Subscription Approval
+
+Before a workflow can subscribe to an event, the request must be approved by the **Event Owner** (publisher).
+
+```
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│   Subscriber    │     │ Event Registry  │     │  Event Owner    │
+│   Workflow      │     │                 │     │  (Publisher)    │
+└────────┬────────┘     └────────┬────────┘     └────────┬────────┘
+         │                       │                       │
+         │ 1. Request            │                       │
+         │    Subscription       │                       │
+         │    (with justification)                       │
+         │──────────────────────>│                       │
+         │                       │                       │
+         │                       │ 2. Store with         │
+         │                       │    status: PENDING    │
+         │                       │                       │
+         │                       │ 3. Notify Owner       │
+         │                       │──────────────────────>│
+         │                       │                       │
+         │                       │                       │ 4. Review
+         │                       │                       │   • Who is requesting
+         │                       │                       │   • Justification
+         │                       │                       │   • Trust level
+         │                       │                       │
+         │                       │ 5. Approve/Reject     │
+         │                       │<──────────────────────│
+         │                       │                       │
+         │ 6. Notification       │                       │
+         │<──────────────────────│                       │
+         │                       │                       │
+         │ 7. Event Router now   │                       │
+         │    dispatches events  │                       │
+         │    to subscriber      │                       │
+```
+
+### 9.4 Data Models
+
+#### Event Definition (with Governance)
+
 ```go
 type EventDefinition struct {
-    Name        string `json:"name"`        // e.g., "orders.created"
-    Domain      string `json:"domain"`      // e.g., "ecommerce"
-    Description string `json:"description"`
-    Schema      any    `json:"schema"`      // JSON Schema for payload
+    ID              string        `json:"id"`
+    Name            string        `json:"name"`            // e.g., "orders.created"
+    Domain          string        `json:"domain"`          // e.g., "ecommerce"
+    Description     string        `json:"description"`
+    Schema          any           `json:"schema"`          // JSON Schema for payload
+    
+    // Governance fields
+    OwnerID         string        `json:"owner_id"`        // Publisher identity
+    Status          PublishStatus `json:"status"`          // PENDING, APPROVED, REJECTED
+    ReviewedBy      string        `json:"reviewed_by"`     // Platform admin who reviewed
+    ReviewedAt      time.Time     `json:"reviewed_at"`
+    RejectionReason string        `json:"rejection_reason"`
+    CreatedAt       time.Time     `json:"created_at"`
 }
+
+type PublishStatus string
+const (
+    PublishStatusPending  PublishStatus = "PENDING"
+    PublishStatusApproved PublishStatus = "APPROVED"
+    PublishStatusRejected PublishStatus = "REJECTED"
+)
 ```
 
-#### Publish Node Configuration
+#### Subscription Request
+
+```go
+type SubscriptionRequest struct {
+    ID              string             `json:"id"`
+    EventID         string             `json:"event_id"`         // Target event
+    SubscriberID    string             `json:"subscriber_id"`    // Who wants to subscribe
+    WorkflowID      string             `json:"workflow_id"`      // Triggered workflow
+    Justification   string             `json:"justification"`    // Why access is needed
+    
+    // Governance fields
+    Status          SubscriptionStatus `json:"status"`
+    ReviewedBy      string             `json:"reviewed_by"`      // Event owner
+    ReviewedAt      time.Time          `json:"reviewed_at"`
+    RejectionReason string             `json:"rejection_reason"`
+    CreatedAt       time.Time          `json:"created_at"`
+}
+
+type SubscriptionStatus string
+const (
+    SubscriptionStatusPending  SubscriptionStatus = "PENDING"
+    SubscriptionStatusApproved SubscriptionStatus = "APPROVED"
+    SubscriptionStatusRejected SubscriptionStatus = "REJECTED"
+    SubscriptionStatusRevoked  SubscriptionStatus = "REVOKED"  // Owner can revoke
+)
+```
+
+### 9.5 API Endpoints
+
+#### Event Publication APIs
+
+| Method | Endpoint | Actor | Description |
+|--------|----------|-------|-------------|
+| `POST` | `/events` | Publisher | Submit event definition for review |
+| `GET` | `/events` | Any | List approved events (marketplace catalog) |
+| `GET` | `/events/pending` | Platform Admin | List events pending approval |
+| `POST` | `/events/:id/approve` | Platform Admin | Approve event publication |
+| `POST` | `/events/:id/reject` | Platform Admin | Reject with reason |
+| `GET` | `/events/:id` | Any | Get event details (if approved) |
+
+#### Subscription APIs
+
+| Method | Endpoint | Actor | Description |
+|--------|----------|-------|-------------|
+| `POST` | `/events/:id/subscribe` | Subscriber | Request subscription with justification |
+| `GET` | `/events/:id/subscriptions` | Event Owner | List subscriptions for their event |
+| `GET` | `/subscriptions/pending` | Event Owner | List pending requests for their events |
+| `POST` | `/subscriptions/:id/approve` | Event Owner | Approve subscription |
+| `POST` | `/subscriptions/:id/reject` | Event Owner | Reject subscription |
+| `POST` | `/subscriptions/:id/revoke` | Event Owner | Revoke existing subscription |
+
+### 9.6 Event Router (Updated)
+
+The Event Router now checks subscription status before dispatching:
+
+```
+1. Receive event from marketplace.<domain>.<event>
+2. Lookup EventDefinition → must be APPROVED
+3. Query SubscriptionRequests where:
+   - event_id = current event
+   - status = APPROVED
+4. For each approved subscription:
+   - Spawn workflow execution
+   - Inject event payload as input
+```
+
+### 9.7 Publish Node Configuration
+
 ```json
 {
     "type": "PublishEvent",
@@ -515,7 +678,10 @@ type EventDefinition struct {
 }
 ```
 
-#### Event Trigger (Start Node)
+> **Note**: Publishing will fail at runtime if the event is not in `APPROVED` status.
+
+### 9.8 Event Trigger (Start Node)
+
 ```json
 {
     "id": "start",
@@ -530,11 +696,7 @@ type EventDefinition struct {
 }
 ```
 
-### 9.4 Event Router
-The **Scheduler** (or a dedicated component) subscribes to `marketplace.>` and:
-1.  Receives a public event.
-2.  Queries the **Workflow Repository** for workflows with matching Event Triggers.
-3.  Spawns a new execution for each matching workflow, injecting the event payload as input.
+> **Note**: The Event Router only dispatches to workflows with `APPROVED` subscriptions.
 
 ---
 
