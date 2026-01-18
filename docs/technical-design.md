@@ -52,9 +52,9 @@ A distributed workflow orchestration engine inspired by n8n, built with event so
 │  ┌─────────────────────────────────────────────────────────────────┐   │
 │  │                        MongoDB                                   │   │
 │  │         events | node_registrations | workflows                  │   │
+│  │  *Event Sourcing Store (Immutable Ledger)*                       │   │
 │  └─────────────────────────────────────────────────────────────────┘   │
-└──────────────────────────────────┼──────────────────────────────────────┘
-                                   │
+│                                  │                                      │
                       ┌────────────┴────────────┐
                       │  NATS Leaf Node Config  │
                       │  • TLS + Credentials    │
@@ -91,9 +91,9 @@ A distributed workflow orchestration engine inspired by n8n, built with event so
 
 | Component | Responsibility |
 |-----------|----------------|
-| **Orchestrator** | DAG traversal, join state management, execution lifecycle |
+| **Orchestrator** | DAG traversal, join state management, execution lifecycle, **Replay/Interpreter** |
 | **Scheduler** | Dispatch to workers, worker routing, node validation |
-| **Worker** | Node execution, result reporting |
+| **Worker** | Node execution, result reporting, **Client-Side Encryption** |
 | **Node Registry** | Dynamic node registration, JWT auth, health checks |
 | **Event Store** | CloudEvents persistence (MongoDB) |
 | **Event Bus** | Event distribution (NATS JetStream) |
@@ -256,6 +256,39 @@ All events follow the [CloudEvents v1.0](https://cloudevents.io/) specification:
 }
 ```
 
+### 3.4 Event Sourcing & Persistence (Hybrid-Flow)
+
+The system uses **Event Sourcing** with MongoDB as the source of truth. State is derived by replaying events.
+
+#### History Event Schema
+Stored in the `history_events` collection.
+
+```go
+type HistoryEvent struct {
+    WorkflowID string          `bson:"workflow_id"`
+    RunID      string          `bson:"run_id"`
+    EventID    int64           `bson:"event_id"`    // Monotonically increasing
+    Type       EventType       `bson:"event_type"`  // e.g., ExecutionStarted, TaskScheduled
+    Payload    []byte          `bson:"payload"`     // Encrypted binary data
+    Timestamp  time.Time       `bson:"timestamp"`
+}
+```
+
+#### Optimistic Locking (MongoDB)
+To ensure consistency without heavy transactions, we use **Optimistic Locking** when appending events.
+
+1. **Read**: Get the last `EventID` for a workflow run.
+2. **Write**: Attempt to insert new events with `ExpectedEventID`.
+3. **Query**:
+   ```javascript
+   db.history_events.insert({
+       workflow_id: "wf-1",
+       event_id: current_id + 1,
+       ...
+   })
+   ```
+4. **Collision**: If `event_id` exists (unique index violation), another worker updated the state. Fetch new events -> Replay -> Retry.
+
 ---
 
 ## 4. Event Flow
@@ -370,6 +403,29 @@ sequenceDiagram
 
 ## 5. Security
 
+### 4.5 Durable Timers (Long-Running Waits)
+
+For long delays (minutes to hours), we avoid blocking threads.
+
+1. **Interpreter**: Encounters "Wait" node.
+2. **Action**: Emits `TimerStarted` event with `FireTime = Now + Duration`.
+3. **Resource Release**: Worker/Orchestrator finishes processing; no active thread held.
+4. **Timer Service**: A background component polls MongoDB/NATS for `FireTime <= Now`.
+5. **Wake Up**: Service emits `TimerFired` event -> Orchestrator resumes execution.
+
+### 4.6 Dynamic Signals & Updates (Human-in-the-Loop)
+
+Workflows can be modified or influenced mid-execution using **Signals**.
+
+1. **Wait for Signal**: Workflow pauses at a specific node (e.g., "Approval").
+2. **User Action**: User modifies the workflow structure (JSON) in the UI.
+3. **Signal Emission**: User sends a Signal (e.g., `ApproveUpdate`) containing the *new* Workflow Definition.
+4. **Update**: Orchestrator receives Signal, updates the cached Workflow Definition (Version N+1), and resumes execution with the new path.
+
+---
+
+## 5. Security
+
 ### 5.1 Authentication Flow (JWT + Proxy)
 
 ```
@@ -390,6 +446,16 @@ sequenceDiagram
     "exp": 1734786400
 }
 ```
+
+### 5.3 Client-Side Encryption (Zero-Knowledge)
+
+To protect sensitive data (PII) even from database admins, we implement the **Data Converter Pattern**.
+
+1. **Worker (Secure Verification)**: Holds the Symmetric Encryption Key.
+2. **Input**: Decrypts incoming payload -> Executes logic.
+3. **Output**: Encrypts result payload -> Emits event.
+4. **MongoDB**: Stores only encrypted binary blobs in `history_events`.
+5. **UI (Debug)**: Fetches encrypted history -> Local decryption (client-side or secure proxy) for display.
 
 ---
 
@@ -779,10 +845,170 @@ Leaf Node credentials are scoped to only the required subjects:
 
 ---
 
-## 11. Future Considerations
+## 11. Scale-Out Strategy
+
+This section details how to horizontally scale the platform to handle high event volumes.
+
+### 11.1 Scalability Overview
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         Horizontal Scaling Model                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   ┌──────────────────┐   Queue Group   ┌──────────────────┐                 │
+│   │ Orchestrator #1  │◄───────────────►│ Orchestrator #N  │                 │
+│   └────────┬─────────┘                 └────────┬─────────┘                 │
+│            │                                     │                           │
+│            └──────────────┬──────────────────────┘                           │
+│                           ▼                                                  │
+│            ┌──────────────────────────────┐                                  │
+│            │   Distributed JoinStateStore │  (MongoDB / Redis)              │
+│            │   Shard Key: execution_id    │                                  │
+│            └──────────────────────────────┘                                  │
+│                                                                              │
+│   ┌──────────────────┐   Queue Group   ┌──────────────────┐                 │
+│   │   Scheduler #1   │◄───────────────►│   Scheduler #N   │  (Stateless)   │
+│   └──────────────────┘                 └──────────────────┘                 │
+│                                                                              │
+│   ┌──────────────────┐   Queue Group   ┌──────────────────┐                 │
+│   │  Event Router #1 │◄───────────────►│  Event Router #N │  (Stateless)   │
+│   └──────────────────┘                 └──────────────────┘                 │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 11.2 Distributed JoinStateStore
+
+The Orchestrator's join state must be externalized for horizontal scaling.
+
+#### Interface
+
+```go
+type DistributedJoinStateStore interface {
+    // GetOrCreate atomically retrieves or creates a pending join state.
+    GetOrCreate(ctx context.Context, executionID, joinNodeID string) (*PendingJoin, error)
+    
+    // Update uses optimistic locking (version field) to update state.
+    Update(ctx context.Context, state *PendingJoin) error
+    
+    // Delete removes the state after the join node is scheduled.
+    Delete(ctx context.Context, executionID, joinNodeID string) error
+}
+```
+
+#### MongoDB Implementation
+
+```javascript
+// Collection: pending_joins
+// Shard Key: { execution_id: "hashed" }
+{
+    "_id": ObjectId("..."),
+    "execution_id": "exec-abc",
+    "join_node_id": "join-1",
+    "required_predecessors": ["fetch-user", "fetch-orders"],
+    "completed_predecessors": ["fetch-user"],
+    "inputs": { "user": { "name": "Alice" } },
+    "version": 1,
+    "created_at": ISODate("...")
+}
+
+// Optimistic Lock Update
+db.pending_joins.findOneAndUpdate(
+    { execution_id: "exec-abc", join_node_id: "join-1", version: 1 },
+    { $set: { completed_predecessors: [...], inputs: {...}, version: 2 } }
+)
+```
+
+### 11.3 Partitioned Event Consumption (NATS Queue Groups)
+
+All event consumers use **NATS Queue Groups** to distribute load.
+
+| Consumer | Subject | Queue Group |
+|----------|---------|-------------|
+| Orchestrator | `workflow.events.execution` | `orchestrator-group` |
+| Scheduler | `workflow.events.scheduler` | `scheduler-group` |
+| Event Router | `marketplace.>` | `event-router-group` |
+
+```go
+// Orchestrator subscription with queue group
+js.QueueSubscribe(
+    "workflow.events.execution",
+    "orchestrator-group",
+    handleExecutionEvent,
+    nats.Durable("orchestrator-consumer"),
+)
+```
+
+> **Key Benefit**: Adding more instances automatically shares the message load. NATS ensures each message is delivered to exactly one member of the queue group.
+
+### 11.4 MongoDB Sharding for Event Store
+
+For high-volume event writes, shard the `history_events` collection.
+
+#### Shard Key Strategy
+
+| Option | Shard Key | Pros | Cons |
+|--------|-----------|------|------|
+| **Recommended** | `{ workflow_id: 1, run_id: 1 }` | Balances writes; co-locates events for one execution | Requires compound key lookups |
+| Alternative | `{ workflow_id: "hashed" }` | Even distribution | May scatter related events |
+
+```javascript
+// Enable sharding
+sh.shardCollection("workflow.history_events", { workflow_id: 1, run_id: 1 })
+
+// Index for optimistic locking
+db.history_events.createIndex(
+    { workflow_id: 1, run_id: 1, event_id: 1 },
+    { unique: true }
+)
+```
+
+### 11.5 Event Router Horizontal Scaling
+
+The Event Router (Section 9.6) must be stateless to scale horizontally.
+
+```mermaid
+graph LR
+    subgraph "Marketplace Bus"
+        EV[marketplace.orders.created]
+    end
+    
+    subgraph "Event Router Pool (Queue Group)"
+        R1[Router #1]
+        R2[Router #2]
+        R3[Router #N]
+    end
+    
+    EV --> R1
+    EV --> R2
+    EV --> R3
+    
+    R1 & R2 & R3 --> |Spawn Execution| NATS[workflow.events.execution]
+```
+
+**Implementation:**
+- Each router instance subscribes with the same queue group.
+- Router queries MongoDB for approved subscriptions (can be cached with TTL).
+- Router publishes `ExecutionStarted` events to trigger workflows.
+
+### 11.6 Scaling Triggers
+
+| Symptom | Component | Action |
+|---------|-----------|--------|
+| High latency on `workflow.events.execution` | Orchestrator | Add instances to queue group |
+| High latency on `workflow.events.scheduler` | Scheduler | Add instances to queue group |
+| MongoDB write contention on `history_events` | Event Store | Enable sharding; increase write concern |
+| Slow event dispatch from Marketplace | Event Router | Add instances; cache subscription lookups |
+| `PendingJoin` state lookup latency | JoinStateStore | Add Redis replicas or MongoDB shards |
+
+---
+
+## 12. Future Considerations
 
 1.  **NATS Auth Callout** - Tighter integration for worker authentication
 2.  **Workflow Versioning** - Immutable workflow definitions
 3.  **Retry Policies** - Configurable retry with backoff
 4.  **Workflow UI** - Visual editor and monitoring dashboard
 5.  **Join Operators** - Support for `any` (OR) in addition to current `all` (AND)
+
