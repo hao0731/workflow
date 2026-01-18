@@ -149,6 +149,35 @@ func (r *WorkflowRegistry) ListWorkflows() []string {
 	return ids
 }
 
+// Register adds or updates a workflow in the registry.
+func (r *WorkflowRegistry) Register(wf *engine.Workflow) error {
+	if wf == nil {
+		return fmt.Errorf("workflow is nil")
+	}
+	if wf.ID == "" {
+		return fmt.Errorf("workflow ID is required")
+	}
+
+	r.mu.Lock()
+	r.workflows[wf.ID] = wf
+	r.mu.Unlock()
+
+	return nil
+}
+
+// Delete removes a workflow from the registry.
+func (r *WorkflowRegistry) Delete(id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if _, ok := r.workflows[id]; !ok {
+		return fmt.Errorf("workflow not found: %s", id)
+	}
+
+	delete(r.workflows, id)
+	return nil
+}
+
 // isYAMLFile checks if a filename has a YAML extension.
 func isYAMLFile(name string) bool {
 	ext := strings.ToLower(filepath.Ext(name))
