@@ -49,8 +49,14 @@ func main() {
 	db := mongoClient.Database("orchestration")
 	eventStore := eventstore.NewMongoEventStore(db, "events")
 
-	// 4. Initialize DSL registry
-	registry := dsl.NewWorkflowRegistry()
+	// 4. Initialize workflow store based on config
+	store, err := dsl.NewWorkflowStoreFromConfig(cfg.WorkflowStore, db)
+	if err != nil {
+		logger.Error("failed to create workflow store", slog.Any("error", err))
+		os.Exit(1)
+	}
+	registry := dsl.NewWorkflowRegistry(dsl.WithStore(store))
+	logger.Info("workflow store initialized", slog.String("type", cfg.WorkflowStore))
 
 	// 5. Optionally load workflows from directory
 	workflowDir := os.Getenv("WORKFLOW_DIR")
