@@ -36,6 +36,7 @@ func (h *WorkflowHandler) RegisterRoutes(g *echo.Group) {
 	g.POST("/workflows", h.Create)
 	g.GET("/workflows", h.List)
 	g.GET("/workflows/:id", h.Get)
+	g.GET("/workflows/:id/source", h.GetSource)
 	g.PUT("/workflows/:id", h.Update)
 	g.DELETE("/workflows/:id", h.Delete)
 }
@@ -45,6 +46,21 @@ type WorkflowResponse struct {
 	ID          string               `json:"id"`
 	Nodes       []NodeResponse       `json:"nodes"`
 	Connections []ConnectionResponse `json:"connections"`
+}
+
+// WorkflowSourceResponse includes YAML source and metadata.
+type WorkflowSourceResponse struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Version     string `json:"version"`
+	Source      string `json:"source"`
+	Stats       struct {
+		NodeCount       int    `json:"node_count"`
+		ConnectionCount int    `json:"connection_count"`
+		HasEventTrigger bool   `json:"has_event_trigger"`
+		TriggerEvent    string `json:"trigger_event,omitempty"`
+	} `json:"stats"`
 }
 
 // NodeResponse is the API response for a node.
@@ -136,6 +152,39 @@ func (h *WorkflowHandler) Get(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, toWorkflowResponse(wf))
+}
+
+// GetSource handles GET /workflows/:id/source
+func (h *WorkflowHandler) GetSource(c echo.Context) error {
+	id := c.Param("id")
+
+	wf, err := h.registry.GetByID(c.Request().Context(), id)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": err.Error()})
+	}
+
+	// Build stats
+	hasEventTrigger := false
+	triggerEvent := ""
+	if start := wf.GetStartNode(); start != nil {
+		if eventName, domain, ok := start.GetEventTrigger(); ok {
+			hasEventTrigger = true
+			triggerEvent = eventName + "@" + domain
+		}
+	}
+
+	resp := WorkflowSourceResponse{
+		ID:          wf.ID,
+		Name:        "", // Would need to store this in registry
+		Description: "",
+		Version:     "",
+	}
+	resp.Stats.NodeCount = len(wf.Nodes)
+	resp.Stats.ConnectionCount = len(wf.Connections)
+	resp.Stats.HasEventTrigger = hasEventTrigger
+	resp.Stats.TriggerEvent = triggerEvent
+
+	return c.JSON(http.StatusOK, resp)
 }
 
 // Update handles PUT /workflows/:id
