@@ -115,7 +115,7 @@ func (h *WorkflowHandler) Create(c echo.Context) error {
 	}
 
 	// Register workflow
-	if err := h.registry.Register(wf); err != nil {
+	if err := h.registry.RegisterWithSource(wf, body); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 
@@ -224,7 +224,7 @@ func (h *WorkflowHandler) Update(c echo.Context) error {
 	}
 
 	// Register (upsert)
-	if err := h.registry.Register(wf); err != nil {
+	if err := h.registry.RegisterWithSource(wf, body); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 

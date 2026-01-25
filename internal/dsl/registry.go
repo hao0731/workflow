@@ -141,8 +141,13 @@ func (r *WorkflowRegistry) ListWorkflows() []string {
 	return ids
 }
 
-// Register adds or updates a workflow in the registry.
+// Register adds or updates a workflow in the registry (without source).
 func (r *WorkflowRegistry) Register(wf *engine.Workflow) error {
+	return r.RegisterWithSource(wf, nil)
+}
+
+// RegisterWithSource adds or updates a workflow with its YAML source.
+func (r *WorkflowRegistry) RegisterWithSource(wf *engine.Workflow, source []byte) error {
 	if wf == nil {
 		return fmt.Errorf("workflow is nil")
 	}
@@ -150,7 +155,7 @@ func (r *WorkflowRegistry) Register(wf *engine.Workflow) error {
 		return fmt.Errorf("workflow ID is required")
 	}
 
-	return r.store.Register(context.Background(), wf, nil)
+	return r.store.Register(context.Background(), wf, source)
 }
 
 // Delete removes a workflow from the registry.
