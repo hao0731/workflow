@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 
 	"github.com/cheriehsieh/orchestration/internal/engine"
 )
@@ -14,12 +13,11 @@ import (
 // WorkflowRegistry manages loaded workflows from DSL files.
 // Implements engine.WorkflowRepository for seamless integration.
 type WorkflowRegistry struct {
+	store     WorkflowStore
 	loader    WorkflowLoader
 	parser    WorkflowParser
 	validator WorkflowValidator
 	converter WorkflowConverter
-	workflows map[string]*engine.Workflow
-	mu        sync.RWMutex
 }
 
 // RegistryOption configures WorkflowRegistry.
@@ -28,11 +26,11 @@ type RegistryOption func(*WorkflowRegistry)
 // NewWorkflowRegistry creates a new WorkflowRegistry with default components.
 func NewWorkflowRegistry(opts ...RegistryOption) *WorkflowRegistry {
 	r := &WorkflowRegistry{
+		store:     NewInMemoryWorkflowStore(),
 		loader:    NewFileSystemLoader(""),
 		parser:    NewYAMLParser(),
 		validator: NewCompositeValidator(NewStructureValidator(), NewDAGValidator()),
 		converter: NewDefaultConverter(),
-		workflows: make(map[string]*engine.Workflow),
 	}
 
 	for _, opt := range opts {
@@ -40,6 +38,13 @@ func NewWorkflowRegistry(opts ...RegistryOption) *WorkflowRegistry {
 	}
 
 	return r
+}
+
+// WithStore sets a custom store backend.
+func WithStore(store WorkflowStore) RegistryOption {
+	return func(r *WorkflowRegistry) {
+		r.store = store
+	}
 }
 
 // WithLoader sets a custom loader.
@@ -91,11 +96,7 @@ func (r *WorkflowRegistry) LoadFile(ctx context.Context, path string) error {
 		return fmt.Errorf("conversion failed: %w", err)
 	}
 
-	r.mu.Lock()
-	r.workflows[wf.ID] = wf
-	r.mu.Unlock()
-
-	return nil
+	return r.store.Register(ctx, wf, data)
 }
 
 // LoadDirectory loads all workflow files from a directory.
@@ -126,26 +127,17 @@ func (r *WorkflowRegistry) LoadDirectory(ctx context.Context, dir string) error 
 
 // GetByID implements engine.WorkflowRepository.
 func (r *WorkflowRegistry) GetByID(ctx context.Context, id string) (*engine.Workflow, error) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+	return r.store.GetByID(ctx, id)
+}
 
-	wf, ok := r.workflows[id]
-	if !ok {
-		return nil, fmt.Errorf("workflow not found: %s", id)
-	}
-
-	return wf, nil
+// GetSource returns the original YAML source for a workflow.
+func (r *WorkflowRegistry) GetSource(ctx context.Context, id string) ([]byte, error) {
+	return r.store.GetSource(ctx, id)
 }
 
 // ListWorkflows returns all loaded workflow IDs.
 func (r *WorkflowRegistry) ListWorkflows() []string {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	ids := make([]string, 0, len(r.workflows))
-	for id := range r.workflows {
-		ids = append(ids, id)
-	}
+	ids, _ := r.store.List(context.Background())
 	return ids
 }
 
@@ -158,24 +150,12 @@ func (r *WorkflowRegistry) Register(wf *engine.Workflow) error {
 		return fmt.Errorf("workflow ID is required")
 	}
 
-	r.mu.Lock()
-	r.workflows[wf.ID] = wf
-	r.mu.Unlock()
-
-	return nil
+	return r.store.Register(context.Background(), wf, nil)
 }
 
 // Delete removes a workflow from the registry.
 func (r *WorkflowRegistry) Delete(id string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if _, ok := r.workflows[id]; !ok {
-		return fmt.Errorf("workflow not found: %s", id)
-	}
-
-	delete(r.workflows, id)
-	return nil
+	return r.store.Delete(context.Background(), id)
 }
 
 // isYAMLFile checks if a filename has a YAML extension.
