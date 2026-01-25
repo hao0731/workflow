@@ -23,6 +23,9 @@ type Config struct {
 	NATSURL     string
 	NATSStream  string
 	NATSSubject string
+
+	// Workflow
+	WorkflowStore string
 }
 
 // Load reads configuration from environment variables.
@@ -44,6 +47,9 @@ func Load() *Config {
 		NATSURL:     getEnv("NATS_URL", "nats://localhost:4222"),
 		NATSStream:  getEnv("NATS_STREAM", "WORKFLOW_EVENTS"),
 		NATSSubject: getEnv("NATS_SUBJECT", "workflow.events.>"),
+
+		// Workflow
+		WorkflowStore: getEnv("WORKFLOW_STORE", "memory"),
 	}
 }
 
