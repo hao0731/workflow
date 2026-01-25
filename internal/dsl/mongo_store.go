@@ -20,6 +20,7 @@ type WorkflowDocument struct {
 	Connections []engine.Connection `bson:"connections"`
 	CreatedAt   time.Time           `bson:"created_at"`
 	UpdatedAt   time.Time           `bson:"updated_at"`
+	DeletedAt   *time.Time          `bson:"deleted_at,omitempty"`
 }
 
 // MongoWorkflowStore provides MongoDB storage for workflows.
@@ -63,6 +64,7 @@ func (s *MongoWorkflowStore) Register(ctx context.Context, wf *engine.Workflow, 
 		bson.M{
 			"$set":         doc,
 			"$setOnInsert": bson.M{"created_at": now},
+			"$unset":       bson.M{"deleted_at": ""},
 		},
 		opts,
 	)
@@ -72,7 +74,7 @@ func (s *MongoWorkflowStore) Register(ctx context.Context, wf *engine.Workflow, 
 func (s *MongoWorkflowStore) GetByID(ctx context.Context, id string) (*engine.Workflow, error) {
 	var doc WorkflowDocument
 
-	err := s.collection.FindOne(ctx, bson.M{"_id": id}).Decode(&doc)
+	err := s.collection.FindOne(ctx, bson.M{"_id": id, "deleted_at": bson.M{"$exists": false}}).Decode(&doc)
 	if errors.Is(err, mongo.ErrNoDocuments) {
 		return nil, ErrWorkflowNotFound
 	}
@@ -93,7 +95,7 @@ func (s *MongoWorkflowStore) GetSource(ctx context.Context, id string) ([]byte, 
 	}
 
 	opts := options.FindOne().SetProjection(bson.M{"source": 1})
-	err := s.collection.FindOne(ctx, bson.M{"_id": id}, opts).Decode(&doc)
+	err := s.collection.FindOne(ctx, bson.M{"_id": id, "deleted_at": bson.M{"$exists": false}}, opts).Decode(&doc)
 	if errors.Is(err, mongo.ErrNoDocuments) {
 		return nil, ErrWorkflowNotFound
 	}
@@ -106,7 +108,7 @@ func (s *MongoWorkflowStore) GetSource(ctx context.Context, id string) ([]byte, 
 
 func (s *MongoWorkflowStore) List(ctx context.Context) ([]string, error) {
 	opts := options.Find().SetProjection(bson.M{"_id": 1})
-	cursor, err := s.collection.Find(ctx, bson.M{}, opts)
+	cursor, err := s.collection.Find(ctx, bson.M{"deleted_at": bson.M{"$exists": false}}, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -127,11 +129,15 @@ func (s *MongoWorkflowStore) List(ctx context.Context) ([]string, error) {
 }
 
 func (s *MongoWorkflowStore) Delete(ctx context.Context, id string) error {
-	result, err := s.collection.DeleteOne(ctx, bson.M{"_id": id})
+	now := time.Now()
+	result, err := s.collection.UpdateOne(ctx,
+		bson.M{"_id": id, "deleted_at": bson.M{"$exists": false}},
+		bson.M{"$set": bson.M{"deleted_at": now}},
+	)
 	if err != nil {
 		return err
 	}
-	if result.DeletedCount == 0 {
+	if result.MatchedCount == 0 {
 		return ErrWorkflowNotFound
 	}
 	return nil
