@@ -50,19 +50,17 @@ func (s *MongoWorkflowStore) Register(ctx context.Context, wf *engine.Workflow, 
 	}
 
 	now := time.Now()
-	doc := WorkflowDocument{
-		ID:          wf.ID,
-		Source:      source,
-		Nodes:       wf.Nodes,
-		Connections: wf.Connections,
-		UpdatedAt:   now,
-	}
 
 	opts := options.Update().SetUpsert(true)
 	_, err := s.collection.UpdateOne(ctx,
 		bson.M{"_id": wf.ID},
 		bson.M{
-			"$set":         doc,
+			"$set": bson.M{
+				"source":      source,
+				"nodes":       wf.Nodes,
+				"connections": wf.Connections,
+				"updated_at":  now,
+			},
 			"$setOnInsert": bson.M{"created_at": now},
 			"$unset":       bson.M{"deleted_at": ""},
 		},
