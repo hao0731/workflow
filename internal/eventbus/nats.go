@@ -58,6 +58,7 @@ func (b *NATSEventBus) Publish(ctx context.Context, event cloudevents.Event) err
 }
 
 func (b *NATSEventBus) Subscribe(ctx context.Context, handler EventHandler) error {
+	// Use simple PullSubscribe - let NATS use existing consumer config if present
 	sub, err := b.js.PullSubscribe(b.subject, b.consumerName)
 	if err != nil {
 		return err
