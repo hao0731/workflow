@@ -124,7 +124,10 @@ func main() {
 	apiGroup := e.Group("/api")
 
 	// Workflow routes
-	workflowHandler := dslapi.NewWorkflowHandler(registry, logger, dslapi.WithEventBus(executionEventBus))
+	workflowHandler := dslapi.NewWorkflowHandler(registry, logger,
+		dslapi.WithEventBus(executionEventBus),
+		dslapi.WithEventStore(eventStore),
+	)
 	workflowHandler.RegisterRoutes(apiGroup)
 
 	// Execution routes
