@@ -79,7 +79,7 @@ nodes:
     name: "Start"
 
   - id: on-boarding
-    type: LogNode
+    type: ActionNode
     name: "On-boarding Task"
     parameters:
       message: "Processing onboarding for {{.input.name}} ({{.input.employee_id}})"
@@ -132,7 +132,7 @@ nodes:
         employee_id: "{{.event.employee_id}}"
 
   - id: new-channel-member
-    type: LogNode
+    type: ActionNode
     name: "Add to Channel"
     parameters:
       message: "Adding {{.input.employee_name}} ({{.input.employee_id}}) to general channel"
