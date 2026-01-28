@@ -1,14 +1,19 @@
 package api
 
 import (
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"time"
 
+	cloudevents "github.com/cloudevents/sdk-go/v2"
+	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 
 	"github.com/cheriehsieh/orchestration/internal/dsl"
 	"github.com/cheriehsieh/orchestration/internal/engine"
+	"github.com/cheriehsieh/orchestration/internal/eventbus"
 )
 
 // WorkflowHandler handles HTTP requests for workflow management.
@@ -18,17 +23,32 @@ type WorkflowHandler struct {
 	validator dsl.WorkflowValidator
 	converter dsl.WorkflowConverter
 	logger    *slog.Logger
+	eventBus  eventbus.Publisher
+}
+
+// HandlerOption is a functional option for WorkflowHandler.
+type HandlerOption func(*WorkflowHandler)
+
+// WithEventBus sets the event bus for publishing execution events.
+func WithEventBus(eb eventbus.Publisher) HandlerOption {
+	return func(h *WorkflowHandler) {
+		h.eventBus = eb
+	}
 }
 
 // NewWorkflowHandler creates a new WorkflowHandler.
-func NewWorkflowHandler(registry *dsl.WorkflowRegistry, logger *slog.Logger) *WorkflowHandler {
-	return &WorkflowHandler{
+func NewWorkflowHandler(registry *dsl.WorkflowRegistry, logger *slog.Logger, opts ...HandlerOption) *WorkflowHandler {
+	h := &WorkflowHandler{
 		registry:  registry,
 		parser:    dsl.NewYAMLParser(),
 		validator: dsl.NewCompositeValidator(dsl.NewStructureValidator(), dsl.NewDAGValidator()),
 		converter: dsl.NewDefaultConverter(),
 		logger:    logger,
 	}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
 }
 
 // RegisterRoutes registers workflow API routes.
@@ -39,6 +59,7 @@ func (h *WorkflowHandler) RegisterRoutes(g *echo.Group) {
 	g.GET("/workflows/:id/source", h.GetSource)
 	g.PUT("/workflows/:id", h.Update)
 	g.DELETE("/workflows/:id", h.Delete)
+	g.POST("/workflows/:id/execute", h.ExecuteWorkflow)
 }
 
 // WorkflowResponse is the API response for a workflow.
@@ -76,6 +97,19 @@ type ConnectionResponse struct {
 	FromPort string `json:"from_port,omitempty"`
 	ToNode   string `json:"to_node"`
 	ToPort   string `json:"to_port,omitempty"`
+}
+
+// ExecuteRequest is the request body for executing a workflow.
+type ExecuteRequest struct {
+	Input map[string]any `json:"input"`
+}
+
+// ExecuteResponse is the response for a workflow execution.
+type ExecuteResponse struct {
+	ExecutionID string    `json:"execution_id"`
+	WorkflowID  string    `json:"workflow_id"`
+	Status      string    `json:"status"`
+	StartedAt   time.Time `json:"started_at"`
 }
 
 // Create handles POST /workflows
@@ -276,4 +310,63 @@ func toWorkflowResponse(wf *engine.Workflow) WorkflowResponse {
 		Nodes:       nodes,
 		Connections: connections,
 	}
+}
+
+// ExecuteWorkflow handles POST /workflows/:id/execute
+func (h *WorkflowHandler) ExecuteWorkflow(c echo.Context) error {
+	workflowID := c.Param("id")
+
+	// Verify workflow exists
+	_, err := h.registry.GetByID(c.Request().Context(), workflowID)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "workflow not found"})
+	}
+
+	// Parse request body
+	var req ExecuteRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+	}
+
+	// Check if eventBus is configured
+	if h.eventBus == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "execution not available - event bus not configured",
+		})
+	}
+
+	// Generate execution ID
+	execID := fmt.Sprintf("exec-%d", time.Now().Unix())
+
+	// Create CloudEvent
+	event := cloudevents.NewEvent()
+	event.SetID(uuid.New().String())
+	event.SetSource("orchestration.workflow-api")
+	event.SetType(engine.ExecutionStarted)
+	event.SetSubject(execID)
+	_ = event.SetData(cloudevents.ApplicationJSON, engine.ExecutionStartedData{
+		WorkflowID: workflowID,
+		InputData:  req.Input,
+	})
+
+	// Publish to NATS
+	if err := h.eventBus.Publish(c.Request().Context(), event); err != nil {
+		h.logger.Error("failed to publish execution event",
+			slog.String("workflow_id", workflowID),
+			slog.Any("error", err),
+		)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to start execution"})
+	}
+
+	h.logger.Info("workflow execution started",
+		slog.String("workflow_id", workflowID),
+		slog.String("execution_id", execID),
+	)
+
+	return c.JSON(http.StatusCreated, ExecuteResponse{
+		ExecutionID: execID,
+		WorkflowID:  workflowID,
+		Status:      "started",
+		StartedAt:   time.Now(),
+	})
 }

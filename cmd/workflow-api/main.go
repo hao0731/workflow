@@ -11,6 +11,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
+	"github.com/nats-io/nats.go"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 
@@ -18,7 +19,9 @@ import (
 	"github.com/cheriehsieh/orchestration/internal/config"
 	"github.com/cheriehsieh/orchestration/internal/dsl"
 	dslapi "github.com/cheriehsieh/orchestration/internal/dsl/api"
+	"github.com/cheriehsieh/orchestration/internal/eventbus"
 	"github.com/cheriehsieh/orchestration/internal/eventstore"
+	"github.com/cheriehsieh/orchestration/internal/marketplace"
 )
 
 func main() {
@@ -58,7 +61,25 @@ func main() {
 	registry := dsl.NewWorkflowRegistry(dsl.WithStore(store))
 	logger.Info("workflow store initialized", slog.String("type", cfg.WorkflowStore))
 
-	// 5. Optionally load workflows from directory
+	// 5. Connect to NATS
+	nc, err := nats.Connect(cfg.NATSURL)
+	if err != nil {
+		logger.Error("failed to connect to NATS", slog.Any("error", err))
+		os.Exit(1)
+	}
+	defer nc.Close()
+
+	js, err := nc.JetStream()
+	if err != nil {
+		logger.Error("failed to create JetStream context", slog.Any("error", err))
+		os.Exit(1)
+	}
+
+	// Create EventBus for publishing execution events
+	executionEventBus := eventbus.NewNATSEventBus(js, "workflow.events.execution", "workflow-api", eventbus.WithLogger(logger))
+	logger.Info("connected to NATS", slog.String("url", cfg.NATSURL))
+
+	// 6. Optionally load workflows from directory
 	workflowDir := os.Getenv("WORKFLOW_DIR")
 	if workflowDir != "" {
 		if err := registry.LoadDirectory(context.Background(), workflowDir); err != nil {
@@ -103,7 +124,7 @@ func main() {
 	apiGroup := e.Group("/api")
 
 	// Workflow routes
-	workflowHandler := dslapi.NewWorkflowHandler(registry, logger)
+	workflowHandler := dslapi.NewWorkflowHandler(registry, logger, dslapi.WithEventBus(executionEventBus))
 	workflowHandler.RegisterRoutes(apiGroup)
 
 	// Execution routes
@@ -113,6 +134,11 @@ func main() {
 	// Stream routes
 	streamHandler := api.NewStreamHandler(eventStore, logger)
 	streamHandler.RegisterRoutes(apiGroup)
+
+	// Marketplace routes
+	eventRegistry := marketplace.NewInMemoryEventRegistry()
+	marketplaceHandler := api.NewMarketplaceHandler(eventRegistry, logger)
+	marketplaceHandler.RegisterRoutes(apiGroup)
 
 	// Health check
 	e.GET("/health", func(c echo.Context) error {

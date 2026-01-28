@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,12 +10,23 @@ import (
 
 	"log/slog"
 
+	cloudevents "github.com/cloudevents/sdk-go/v2"
 	"github.com/labstack/echo/v4"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/cheriehsieh/orchestration/internal/dsl"
 )
+
+// mockEventBus captures published events for testing.
+type mockEventBus struct {
+	events []cloudevents.Event
+}
+
+func (m *mockEventBus) Publish(_ context.Context, event cloudevents.Event) error {
+	m.events = append(m.events, event)
+	return nil
+}
 
 func setupTestHandler() (*WorkflowHandler, *echo.Echo) {
 	registry := dsl.NewWorkflowRegistry()
@@ -276,4 +288,98 @@ connections:
 	require.NoError(t, json.Unmarshal(getRec.Body.Bytes(), &wf))
 	nodes := wf["nodes"].([]any)
 	assert.Len(t, nodes, 2)
+}
+
+// Test: Execute workflow successfully
+func TestWorkflowHandler_Execute_Success(t *testing.T) {
+	registry := dsl.NewWorkflowRegistry()
+	logger := slog.Default()
+	eventBus := &mockEventBus{}
+	handler := NewWorkflowHandler(registry, logger, WithEventBus(eventBus))
+
+	e := echo.New()
+	handler.RegisterRoutes(e.Group(""))
+
+	// Create workflow first
+	wfBody := []byte(`
+id: exec-test
+nodes:
+  - id: start
+    type: StartNode
+connections: []
+`)
+	createReq := httptest.NewRequest(http.MethodPost, "/workflows", bytes.NewReader(wfBody))
+	e.ServeHTTP(httptest.NewRecorder(), createReq)
+
+	// Execute workflow
+	execBody := []byte(`{"input": {"message": "hello"}}`)
+	execReq := httptest.NewRequest(http.MethodPost, "/workflows/exec-test/execute", bytes.NewReader(execBody))
+	execReq.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	e.ServeHTTP(rec, execReq)
+
+	require.Equal(t, http.StatusCreated, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.NotEmpty(t, resp["execution_id"])
+	assert.Equal(t, "exec-test", resp["workflow_id"])
+	assert.Equal(t, "started", resp["status"])
+
+	// Verify event was published
+	require.Len(t, eventBus.events, 1)
+	assert.Equal(t, "orchestration.execution.started", eventBus.events[0].Type())
+}
+
+// Test: Execute workflow not found
+func TestWorkflowHandler_Execute_NotFound(t *testing.T) {
+	registry := dsl.NewWorkflowRegistry()
+	logger := slog.Default()
+	eventBus := &mockEventBus{}
+	handler := NewWorkflowHandler(registry, logger, WithEventBus(eventBus))
+
+	e := echo.New()
+	handler.RegisterRoutes(e.Group(""))
+
+	execBody := []byte(`{"input": {}}`)
+	req := httptest.NewRequest(http.MethodPost, "/workflows/nonexistent/execute", bytes.NewReader(execBody))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	e.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+	assert.Empty(t, eventBus.events)
+}
+
+// Test: Execute without event bus configured
+func TestWorkflowHandler_Execute_NoEventBus(t *testing.T) {
+	registry := dsl.NewWorkflowRegistry()
+	logger := slog.Default()
+	handler := NewWorkflowHandler(registry, logger) // No EventBus
+
+	e := echo.New()
+	handler.RegisterRoutes(e.Group(""))
+
+	// Create workflow
+	wfBody := []byte(`
+id: no-bus-test
+nodes:
+  - id: start
+    type: StartNode
+connections: []
+`)
+	createReq := httptest.NewRequest(http.MethodPost, "/workflows", bytes.NewReader(wfBody))
+	e.ServeHTTP(httptest.NewRecorder(), createReq)
+
+	// Try to execute
+	execBody := []byte(`{"input": {}}`)
+	req := httptest.NewRequest(http.MethodPost, "/workflows/no-bus-test/execute", bytes.NewReader(execBody))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	e.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
 }
