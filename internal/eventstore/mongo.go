@@ -58,7 +58,6 @@ func (s *MongoEventStore) GetExecutionsByWorkflow(ctx context.Context, workflowI
 	filter := map[string]any{
 		"type": "orchestration.execution.started",
 		"$or": []map[string]any{
-			{"data.workflow_id": workflowID},
 			{"extensions.workflowid": workflowID},
 		},
 	}

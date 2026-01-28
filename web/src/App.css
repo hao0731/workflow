@@ -411,3 +411,58 @@
 .react-flow__controls-button svg {
   fill: currentColor;
 }
+
+/* CSS Variables for components */
+:root {
+  --primary-color: #3b82f6;
+  --primary-color-light: rgba(59, 130, 246, 0.2);
+  --success-color: #22c55e;
+  --warning-color: #f59e0b;
+  --error-color: #ef4444;
+  --text-primary: #f3f4f6;
+  --text-secondary: #9ca3af;
+  --bg-primary: #111827;
+  --bg-secondary: #1f2937;
+  --bg-hover: #374151;
+  --border-color: #374151;
+}
+
+/* View Toggle */
+.view-toggle {
+  display: flex;
+  background: #374151;
+  border-radius: 6px;
+  padding: 2px;
+}
+
+.view-toggle button {
+  background: transparent;
+  border: none;
+  color: #9ca3af;
+  padding: 0.375rem 0.75rem;
+  font-size: 0.875rem;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: all 0.15s;
+}
+
+.view-toggle button:hover {
+  color: #f3f4f6;
+}
+
+.view-toggle button.active {
+  background: #3b82f6;
+  color: white;
+}
+
+/* Marketplace Layout */
+.marketplace-layout {
+  display: flex;
+  flex: 1;
+}
+
+.marketplace-content {
+  flex: 1;
+  background: var(--bg-primary);
+  overflow-y: auto;
+}

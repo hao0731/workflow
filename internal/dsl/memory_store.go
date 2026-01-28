@@ -85,3 +85,26 @@ func (s *InMemoryWorkflowStore) Delete(ctx context.Context, id string) error {
 	delete(s.workflows, id)
 	return nil
 }
+
+// FindByEventTrigger finds workflows with StartNode triggers matching the event.
+func (s *InMemoryWorkflowStore) FindByEventTrigger(ctx context.Context, eventName, domain string) ([]*engine.Workflow, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var matches []*engine.Workflow
+	for _, entry := range s.workflows {
+		wf := entry.workflow
+		start := wf.GetStartNode()
+		if start == nil {
+			continue
+		}
+		evName, evDomain, ok := start.GetEventTrigger()
+		if !ok {
+			continue
+		}
+		if evName == eventName && evDomain == domain {
+			matches = append(matches, wf)
+		}
+	}
+	return matches, nil
+}

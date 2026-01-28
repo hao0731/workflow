@@ -163,6 +163,46 @@ func (r *WorkflowRegistry) Delete(id string) error {
 	return r.store.Delete(context.Background(), id)
 }
 
+// eventTriggerFinder is an optional interface for stores that support event trigger queries.
+type eventTriggerFinder interface {
+	FindByEventTrigger(ctx context.Context, eventName, domain string) ([]*engine.Workflow, error)
+}
+
+// FindByEventTrigger finds workflows with StartNode triggers matching the event.
+// Implements scheduler.WorkflowMatcher interface.
+func (r *WorkflowRegistry) FindByEventTrigger(ctx context.Context, eventName, domain string) ([]*engine.Workflow, error) {
+	// Delegate to store if it supports FindByEventTrigger
+	if finder, ok := r.store.(eventTriggerFinder); ok {
+		return finder.FindByEventTrigger(ctx, eventName, domain)
+	}
+
+	// Fallback: scan all workflows
+	ids, err := r.store.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	var matches []*engine.Workflow
+	for _, id := range ids {
+		wf, err := r.store.GetByID(ctx, id)
+		if err != nil {
+			continue
+		}
+		start := wf.GetStartNode()
+		if start == nil {
+			continue
+		}
+		evName, evDomain, ok := start.GetEventTrigger()
+		if !ok {
+			continue
+		}
+		if evName == eventName && evDomain == domain {
+			matches = append(matches, wf)
+		}
+	}
+	return matches, nil
+}
+
 // isYAMLFile checks if a filename has a YAML extension.
 func isYAMLFile(name string) bool {
 	ext := strings.ToLower(filepath.Ext(name))

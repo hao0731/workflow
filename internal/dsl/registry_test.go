@@ -8,6 +8,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/cheriehsieh/orchestration/internal/engine"
 )
 
 // Test: Registry loads and retrieves workflow
@@ -143,4 +145,48 @@ connections: []
 	assert.Len(t, ids, 2)
 	assert.Contains(t, ids, "alpha")
 	assert.Contains(t, ids, "beta")
+}
+
+// Test: FindByEventTrigger finds workflows matching event trigger
+func TestWorkflowRegistry_FindByEventTrigger(t *testing.T) {
+	registry := NewWorkflowRegistry()
+
+	// Register workflow with event trigger
+	wfWithTrigger := &engine.Workflow{
+		ID: "subscriber-workflow",
+		Nodes: []engine.Node{
+			{
+				ID:   "start",
+				Type: engine.StartNode,
+				Trigger: &engine.Trigger{
+					Type: engine.TriggerEvent,
+					Criteria: map[string]any{
+						"event_name": "order_created",
+						"domain":     "ecommerce",
+					},
+				},
+			},
+		},
+	}
+	require.NoError(t, registry.Register(wfWithTrigger))
+
+	// Register workflow without trigger
+	wfNoTrigger := &engine.Workflow{
+		ID: "manual-workflow",
+		Nodes: []engine.Node{
+			{ID: "start", Type: engine.StartNode},
+		},
+	}
+	require.NoError(t, registry.Register(wfNoTrigger))
+
+	// Find by matching event
+	found, err := registry.FindByEventTrigger(context.Background(), "order_created", "ecommerce")
+	require.NoError(t, err)
+	require.Len(t, found, 1)
+	assert.Equal(t, "subscriber-workflow", found[0].ID)
+
+	// Find by non-matching event
+	found, err = registry.FindByEventTrigger(context.Background(), "other_event", "other")
+	require.NoError(t, err)
+	assert.Len(t, found, 0)
 }

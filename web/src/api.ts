@@ -4,6 +4,8 @@ import type {
     Execution,
     ExecutionEvent,
     NodeRegistration,
+    DomainGroup,
+    EventDefinition,
 } from './types';
 
 const API_BASE = 'http://localhost:8083/api';
@@ -98,4 +100,33 @@ export async function fetchNodeType(fullType: string): Promise<NodeRegistration 
 // WebSocket stream URL builder
 export function getStreamUrl(executionId: string): string {
     return `ws://localhost:8083/api/executions/${encodeURIComponent(executionId)}/stream`;
+}
+
+// Marketplace APIs
+export async function fetchMarketplaceEvents(domain?: string): Promise<DomainGroup[]> {
+    let url = `${API_BASE}/events`;
+    if (domain) {
+        url += `?domain=${encodeURIComponent(domain)}`;
+    }
+    const response = await fetch(url);
+    if (!response.ok) {
+        throw new Error(`Failed to fetch marketplace events: ${response.statusText}`);
+    }
+    return response.json();
+}
+
+export async function fetchMarketplaceEvent(
+    domain: string,
+    name: string
+): Promise<EventDefinition | null> {
+    const response = await fetch(
+        `${API_BASE}/events/${encodeURIComponent(domain)}/${encodeURIComponent(name)}`
+    );
+    if (response.status === 404) {
+        return null;
+    }
+    if (!response.ok) {
+        throw new Error(`Failed to fetch marketplace event: ${response.statusText}`);
+    }
+    return response.json();
 }

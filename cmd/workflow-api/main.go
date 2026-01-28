@@ -132,10 +132,14 @@ func main() {
 	// 7. Register routes
 	apiGroup := e.Group("/api")
 
+	// Event Marketplace registry (shared between workflow and marketplace handlers)
+	eventRegistry := marketplace.NewMongoEventRegistry(db)
+
 	// Workflow routes
 	workflowHandler := dslapi.NewWorkflowHandler(registry, logger,
 		dslapi.WithEventBus(executionEventBus),
 		dslapi.WithEventStore(eventStore),
+		dslapi.WithEventRegistry(eventRegistry),
 	)
 	workflowHandler.RegisterRoutes(apiGroup)
 
@@ -148,7 +152,6 @@ func main() {
 	streamHandler.RegisterRoutes(apiGroup)
 
 	// Marketplace routes
-	eventRegistry := marketplace.NewInMemoryEventRegistry()
 	marketplaceHandler := api.NewMarketplaceHandler(eventRegistry, logger)
 	marketplaceHandler.RegisterRoutes(apiGroup)
 

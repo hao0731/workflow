@@ -1,0 +1,46 @@
+id: hr-onboarding
+name: "HR Employee Onboarding"
+description: "Registers new employees and publishes event to marketplace"
+version: "1.0.0"
+
+events:
+  - name: new_employee
+    domain: hr
+    description: "Fired when a new employee is onboarded"
+    schema:
+      type: object
+      properties:
+        name:
+          type: string
+        employee_id:
+          type: string
+      required:
+        - name
+        - employee_id
+
+nodes:
+  - id: start
+    type: StartNode
+    name: "Start"
+
+  - id: on-boarding
+    type: ActionNode
+    name: "On-boarding Task"
+    parameters:
+      message: "Processing onboarding for {{.input.name}} ({{.input.employee_id}})"
+
+  - id: publish-new-employee
+    type: PublishEvent
+    name: "Publish New Employee Event"
+    parameters:
+      event_name: new_employee
+      domain: hr
+      payload:
+        name: "{{.input.name}}"
+        employee_id: "{{.input.employee_id}}"
+
+connections:
+  - from: start
+    to: on-boarding
+  - from: on-boarding
+    to: publish-new-employee

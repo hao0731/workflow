@@ -1,0 +1,27 @@
+id: chat-new-member
+name: "Chat New Channel Member"
+description: "Adds new employees to chat channels when they join"
+version: "1.0.0"
+
+nodes:
+  - id: start
+    type: StartNode
+    name: "New Employee Trigger"
+    trigger:
+      type: event
+      criteria:
+        event_name: new_employee
+        domain: hr
+      input_map:
+        employee_name: "{{.event.name}}"
+        employee_id: "{{.event.employee_id}}"
+
+  - id: new-channel-member
+    type: ActionNode
+    name: "Add to Channel"
+    parameters:
+      message: "Adding {{.input.employee_name}} ({{.input.employee_id}}) to general channel"
+
+connections:
+  - from: start
+    to: new-channel-member

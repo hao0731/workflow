@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/cheriehsieh/orchestration/internal/dsl"
+	"github.com/cheriehsieh/orchestration/internal/marketplace"
 )
 
 // mockEventBus captures published events for testing.
@@ -382,4 +383,88 @@ connections: []
 	e.ServeHTTP(rec, req)
 
 	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+}
+
+// Test: Create workflow registers events to marketplace
+func TestWorkflowHandler_Create_RegistersEventsToMarketplace(t *testing.T) {
+	mockEventRegistry := marketplace.NewInMemoryEventRegistry()
+	registry := dsl.NewWorkflowRegistry()
+	logger := slog.Default()
+	handler := NewWorkflowHandler(registry, logger, WithEventRegistry(mockEventRegistry))
+
+	e := echo.New()
+	handler.RegisterRoutes(e.Group(""))
+
+	// YAML with events section
+	body := []byte(`
+id: test-publisher
+nodes:
+  - id: start
+    type: StartNode
+connections: []
+events:
+  - name: test_event
+    domain: testing
+    description: A test event
+`)
+	req := httptest.NewRequest(http.MethodPost, "/workflows", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-yaml")
+	rec := httptest.NewRecorder()
+
+	e.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusCreated, rec.Code)
+
+	// Verify event was registered
+	event, err := mockEventRegistry.Get(context.Background(), "testing", "test_event")
+	require.NoError(t, err)
+	assert.Equal(t, "test_event", event.Name)
+	assert.Equal(t, "testing", event.Domain)
+	assert.Equal(t, "A test event", event.Description)
+	assert.Equal(t, "test-publisher", event.Owner)
+}
+
+// Test: Update workflow registers events to marketplace
+func TestWorkflowHandler_Update_RegistersEventsToMarketplace(t *testing.T) {
+	mockEventRegistry := marketplace.NewInMemoryEventRegistry()
+	registry := dsl.NewWorkflowRegistry()
+	logger := slog.Default()
+	handler := NewWorkflowHandler(registry, logger, WithEventRegistry(mockEventRegistry))
+
+	e := echo.New()
+	handler.RegisterRoutes(e.Group(""))
+
+	// First create workflow without events
+	createBody := []byte(`
+id: test-publisher
+nodes:
+  - id: start
+    type: StartNode
+connections: []
+`)
+	createReq := httptest.NewRequest(http.MethodPost, "/workflows", bytes.NewReader(createBody))
+	e.ServeHTTP(httptest.NewRecorder(), createReq)
+
+	// Now update with events
+	updateBody := []byte(`
+id: test-publisher
+nodes:
+  - id: start
+    type: StartNode
+connections: []
+events:
+  - name: new_event
+    domain: testing
+`)
+	updateReq := httptest.NewRequest(http.MethodPut, "/workflows/test-publisher", bytes.NewReader(updateBody))
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, updateReq)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	// Verify event was registered
+	event, err := mockEventRegistry.Get(context.Background(), "testing", "new_event")
+	require.NoError(t, err)
+	assert.Equal(t, "new_event", event.Name)
+	assert.Equal(t, "testing", event.Domain)
 }

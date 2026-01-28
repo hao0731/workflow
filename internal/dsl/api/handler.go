@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -15,17 +16,19 @@ import (
 	"github.com/cheriehsieh/orchestration/internal/engine"
 	"github.com/cheriehsieh/orchestration/internal/eventbus"
 	"github.com/cheriehsieh/orchestration/internal/eventstore"
+	"github.com/cheriehsieh/orchestration/internal/marketplace"
 )
 
 // WorkflowHandler handles HTTP requests for workflow management.
 type WorkflowHandler struct {
-	registry   *dsl.WorkflowRegistry
-	parser     dsl.WorkflowParser
-	validator  dsl.WorkflowValidator
-	converter  dsl.WorkflowConverter
-	logger     *slog.Logger
-	eventBus   eventbus.Publisher
-	eventStore eventstore.EventStore
+	registry      *dsl.WorkflowRegistry
+	parser        dsl.WorkflowParser
+	validator     dsl.WorkflowValidator
+	converter     dsl.WorkflowConverter
+	logger        *slog.Logger
+	eventBus      eventbus.Publisher
+	eventStore    eventstore.EventStore
+	eventRegistry marketplace.EventRegistry
 }
 
 // HandlerOption is a functional option for WorkflowHandler.
@@ -42,6 +45,13 @@ func WithEventBus(eb eventbus.Publisher) HandlerOption {
 func WithEventStore(es eventstore.EventStore) HandlerOption {
 	return func(h *WorkflowHandler) {
 		h.eventStore = es
+	}
+}
+
+// WithEventRegistry sets the event registry for registering marketplace events.
+func WithEventRegistry(er marketplace.EventRegistry) HandlerOption {
+	return func(h *WorkflowHandler) {
+		h.eventRegistry = er
 	}
 }
 
@@ -162,6 +172,27 @@ func (h *WorkflowHandler) Create(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 
+	// Register events to marketplace
+	if h.eventRegistry != nil && len(def.Events) > 0 {
+		for _, ev := range def.Events {
+			eventDef := &marketplace.EventDefinition{
+				Name:        ev.Name,
+				Domain:      ev.Domain,
+				Description: ev.Description,
+				Schema:      ev.Schema,
+				Owner:       wf.ID,
+			}
+			if err := h.eventRegistry.Register(c.Request().Context(), eventDef); err != nil {
+				if !errors.Is(err, marketplace.ErrEventAlreadyExists) {
+					h.logger.Warn("failed to register event",
+						slog.String("event", ev.Name),
+						slog.Any("error", err),
+					)
+				}
+			}
+		}
+	}
+
 	h.logger.Info("workflow created", slog.String("id", wf.ID))
 	return c.JSON(http.StatusCreated, map[string]any{
 		"id":      wf.ID,
@@ -269,6 +300,27 @@ func (h *WorkflowHandler) Update(c echo.Context) error {
 	// Register (upsert)
 	if err := h.registry.RegisterWithSource(wf, body); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+
+	// Register events to marketplace
+	if h.eventRegistry != nil && len(def.Events) > 0 {
+		for _, ev := range def.Events {
+			eventDef := &marketplace.EventDefinition{
+				Name:        ev.Name,
+				Domain:      ev.Domain,
+				Description: ev.Description,
+				Schema:      ev.Schema,
+				Owner:       wf.ID,
+			}
+			if err := h.eventRegistry.Register(c.Request().Context(), eventDef); err != nil {
+				if !errors.Is(err, marketplace.ErrEventAlreadyExists) {
+					h.logger.Warn("failed to register event",
+						slog.String("event", ev.Name),
+						slog.Any("error", err),
+					)
+				}
+			}
+		}
 	}
 
 	h.logger.Info("workflow updated", slog.String("id", wf.ID))

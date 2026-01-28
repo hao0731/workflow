@@ -81,3 +81,19 @@ export interface PanelState {
 
 export type RightPanelView = 'inspector' | 'definition' | 'registry';
 export type LeftPanelView = 'workflows' | 'registry';
+export type ViewMode = 'workflow' | 'marketplace';
+
+// Marketplace types
+export interface EventDefinition {
+  name: string;
+  domain: string;
+  full_name: string;
+  description: string;
+  schema?: Record<string, unknown>;
+  owner?: string;
+}
+
+export interface DomainGroup {
+  domain: string;
+  events: EventDefinition[];
+}

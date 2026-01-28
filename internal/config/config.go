@@ -49,7 +49,7 @@ func Load() *Config {
 		NATSSubject: getEnv("NATS_SUBJECT", "workflow.events.>"),
 
 		// Workflow
-		WorkflowStore: getEnv("WORKFLOW_STORE", "memory"),
+		WorkflowStore: getEnv("WORKFLOW_STORE", "mongo"),
 	}
 }
 
