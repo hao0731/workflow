@@ -75,6 +75,15 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Ensure stream exists for execution events
+	streamCfg := &nats.StreamConfig{
+		Name:     "WORKFLOW_EVENTS",
+		Subjects: []string{"workflow.events.>"},
+	}
+	if _, err := js.AddStream(streamCfg); err != nil {
+		logger.Debug("stream may already exist", slog.String("stream", streamCfg.Name))
+	}
+
 	// Create EventBus for publishing execution events
 	executionEventBus := eventbus.NewNATSEventBus(js, "workflow.events.execution", "workflow-api", eventbus.WithLogger(logger))
 	logger.Info("connected to NATS", slog.String("url", cfg.NATSURL))
