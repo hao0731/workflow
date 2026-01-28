@@ -140,3 +140,52 @@ func (s *MongoWorkflowStore) Delete(ctx context.Context, id string) error {
 	}
 	return nil
 }
+
+// FindByEventTrigger finds workflows that are triggered by the given event.
+func (s *MongoWorkflowStore) FindByEventTrigger(ctx context.Context, eventName, domain string) ([]*engine.Workflow, error) {
+	// Query all non-deleted workflows and filter in-memory
+	// For production, consider adding indexes on nodes.trigger.criteria
+	cursor, err := s.collection.Find(ctx, bson.M{"deleted_at": bson.M{"$exists": false}})
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	var matching []*engine.Workflow
+	for cursor.Next(ctx) {
+		var doc WorkflowDocument
+		if err := cursor.Decode(&doc); err != nil {
+			continue
+		}
+
+		// Check if any node is a StartNode with matching event trigger
+		for _, node := range doc.Nodes {
+			if node.Type != engine.StartNode || node.Trigger == nil {
+				continue
+			}
+			if node.Trigger.Type != engine.TriggerEvent {
+				continue
+			}
+
+			// Check criteria match
+			criteria := node.Trigger.Criteria
+			if criteria == nil {
+				continue
+			}
+
+			evtName, _ := criteria["event_name"].(string)
+			evtDomain, _ := criteria["domain"].(string)
+
+			if evtName == eventName && (evtDomain == "" || evtDomain == domain) {
+				matching = append(matching, &engine.Workflow{
+					ID:          doc.ID,
+					Nodes:       doc.Nodes,
+					Connections: doc.Connections,
+				})
+				break
+			}
+		}
+	}
+
+	return matching, nil
+}

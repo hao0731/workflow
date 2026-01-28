@@ -7,16 +7,14 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 
-	cloudevents "github.com/cloudevents/sdk-go/v2"
-
 	"github.com/cheriehsieh/orchestration/internal/config"
+	"github.com/cheriehsieh/orchestration/internal/dsl"
 	"github.com/cheriehsieh/orchestration/internal/engine"
 	"github.com/cheriehsieh/orchestration/internal/eventbus"
 	"github.com/cheriehsieh/orchestration/internal/eventstore"
@@ -73,7 +71,7 @@ func main() {
 	}
 
 	// 5. Initialize Event Marketplace Registry
-	eventRegistry := marketplace.NewInMemoryEventRegistry()
+	eventRegistry := marketplace.NewMongoEventRegistry(db)
 
 	// Register a public event
 	_ = eventRegistry.Register(context.Background(), &marketplace.EventDefinition{
@@ -85,62 +83,64 @@ func main() {
 
 	// 6. Define Workflows
 	// Publisher Workflow: Creates an order and publishes to marketplace
-	publisherWorkflow := &engine.Workflow{
-		ID: "order-service",
-		Nodes: []engine.Node{
-			{ID: "start", Type: engine.StartNode, Name: "Start"},
-			{ID: "create-order", Type: engine.ActionNode, Name: "Create Order"},
-			{
-				ID:   "publish-event",
-				Type: engine.PublishEvent,
-				Name: "Publish Order Created",
-				Parameters: map[string]any{
-					"event_name": "order_created",
-					"domain":     "ecommerce",
-					"payload": map[string]any{
-						"order_id": "{{.input.order_id}}",
-						"total":    "{{.input.total}}",
-					},
-				},
-			},
-		},
-		Connections: []engine.Connection{
-			{FromNode: "start", ToNode: "create-order"},
-			{FromNode: "create-order", ToNode: "publish-event"},
-		},
-	}
+	// publisherWorkflow := &engine.Workflow{
+	// 	ID: "order-service",
+	// 	Nodes: []engine.Node{
+	// 		{ID: "start", Type: engine.StartNode, Name: "Start"},
+	// 		{ID: "create-order", Type: engine.ActionNode, Name: "Create Order"},
+	// 		{
+	// 			ID:   "publish-event",
+	// 			Type: engine.PublishEvent,
+	// 			Name: "Publish Order Created",
+	// 			Parameters: map[string]any{
+	// 				"event_name": "order_created",
+	// 				"domain":     "ecommerce",
+	// 				"payload": map[string]any{
+	// 					"order_id": "{{.input.order_id}}",
+	// 					"total":    "{{.input.total}}",
+	// 				},
+	// 			},
+	// 		},
+	// 	},
+	// 	Connections: []engine.Connection{
+	// 		{FromNode: "start", ToNode: "create-order"},
+	// 		{FromNode: "create-order", ToNode: "publish-event"},
+	// 	},
+	// }
 
 	// Subscriber Workflow: Triggered by order_created event
-	subscriberWorkflow := &engine.Workflow{
-		ID: "shipping-service",
-		Nodes: []engine.Node{
-			{
-				ID:   "start",
-				Type: engine.StartNode,
-				Name: "Event Trigger",
-				Trigger: &engine.Trigger{
-					Type: engine.TriggerEvent,
-					Criteria: map[string]any{
-						"event_name": "order_created",
-						"domain":     "ecommerce",
-					},
-				},
-			},
-			{ID: "prepare-shipment", Type: engine.ActionNode, Name: "Prepare Shipment"},
-			{ID: "notify-customer", Type: engine.ActionNode, Name: "Notify Customer"},
-		},
-		Connections: []engine.Connection{
-			{FromNode: "start", ToNode: "prepare-shipment"},
-			{FromNode: "prepare-shipment", ToNode: "notify-customer"},
-		},
-	}
+	// subscriberWorkflow := &engine.Workflow{
+	// 	ID: "shipping-service",
+	// 	Nodes: []engine.Node{
+	// 		{
+	// 			ID:   "start",
+	// 			Type: engine.StartNode,
+	// 			Name: "Event Trigger",
+	// 			Trigger: &engine.Trigger{
+	// 				Type: engine.TriggerEvent,
+	// 				Criteria: map[string]any{
+	// 					"event_name": "order_created",
+	// 					"domain":     "ecommerce",
+	// 				},
+	// 			},
+	// 		},
+	// 		{ID: "prepare-shipment", Type: engine.ActionNode, Name: "Prepare Shipment"},
+	// 		{ID: "notify-customer", Type: engine.ActionNode, Name: "Notify Customer"},
+	// 	},
+	// 	Connections: []engine.Connection{
+	// 		{FromNode: "start", ToNode: "prepare-shipment"},
+	// 		{FromNode: "prepare-shipment", ToNode: "notify-customer"},
+	// 	},
+	// }
 
-	workflowRepo := &InMemoryWorkflowRepo{
-		workflows: map[string]*engine.Workflow{
-			publisherWorkflow.ID:  publisherWorkflow,
-			subscriberWorkflow.ID: subscriberWorkflow,
-		},
-	}
+	// workflowRepo := &InMemoryWorkflowRepo{
+	// 	workflows: map[string]*engine.Workflow{
+	// 		publisherWorkflow.ID:  publisherWorkflow,
+	// 		subscriberWorkflow.ID: subscriberWorkflow,
+	// 	},
+	// }
+
+	workflowRepo := dsl.NewMongoWorkflowStore(db)
 
 	eventStoreImpl := eventstore.NewMongoEventStore(db, "events")
 
@@ -231,44 +231,11 @@ func main() {
 		}()
 	}
 
-	// 12. Trigger the Publisher Workflow
-	time.Sleep(2 * time.Second)
-	executionID := fmt.Sprintf("exec-%d", time.Now().Unix())
-	logger.Info("🚀 Triggering Publisher Workflow (Order Service)",
-		slog.String("execution_id", executionID),
-		slog.String("workflow_id", publisherWorkflow.ID),
+	logger.Info("🚀 Engine started - workflows can now be triggered via API",
+		slog.String("endpoint", "POST /api/workflows/:id/execute"),
 	)
 
-	startEvent := cloudevents.NewEvent()
-	startEvent.SetID(uuid.New().String())
-	startEvent.SetSource(engine.EventSource)
-	startEvent.SetType(engine.ExecutionStarted)
-	startEvent.SetSubject(executionID)
-	_ = startEvent.SetData(cloudevents.ApplicationJSON, engine.ExecutionStartedData{
-		WorkflowID: publisherWorkflow.ID,
-		InputData: map[string]any{
-			"order_id": "ORD-12345",
-			"total":    199.99,
-		},
-	})
-
-	if err := eventStoreImpl.Append(ctx, startEvent); err != nil {
-		logger.Error("failed to store start event", slog.Any("error", err))
-		os.Exit(1)
-	}
-	if err := orchestratorSub.Publish(ctx, startEvent); err != nil {
-		logger.Error("failed to publish start event", slog.Any("error", err))
-		os.Exit(1)
-	}
-
-	logger.Info("📋 Expected flow:",
-		slog.String("1", "Order Service starts"),
-		slog.String("2", "PublishEvent node fires 'order_created' to marketplace"),
-		slog.String("3", "EventRouter catches event, starts Shipping Service"),
-		slog.String("4", "Shipping Service processes event"),
-	)
-
-	// 13. Wait for shutdown signal
+	// 12. Wait for shutdown signal
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan
