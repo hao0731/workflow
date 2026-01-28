@@ -21,8 +21,26 @@ func NewExecutionHandler(es eventstore.EventStore) *ExecutionHandler {
 
 // RegisterRoutes registers execution API routes.
 func (h *ExecutionHandler) RegisterRoutes(g *echo.Group) {
+	g.GET("/workflows/:id/executions", h.ListExecutions)
 	g.GET("/executions/:id", h.GetExecution)
 	g.GET("/executions/:id/events", h.GetEvents)
+}
+
+// ListExecutions handles GET /api/workflows/:id/executions
+func (h *ExecutionHandler) ListExecutions(c echo.Context) error {
+	workflowID := c.Param("id")
+
+	summaries, err := h.eventStore.GetExecutionsByWorkflow(c.Request().Context(), workflowID)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+
+	// Return empty array instead of null
+	if summaries == nil {
+		summaries = []eventstore.ExecutionSummary{}
+	}
+
+	return c.JSON(http.StatusOK, summaries)
 }
 
 // GetExecution handles GET /api/executions/:id
