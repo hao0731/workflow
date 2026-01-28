@@ -54,9 +54,13 @@ func (s *MongoEventStore) GetBySubject(ctx context.Context, subject string) ([]c
 // It finds all execution.started events and derives status from execution.completed/failed events.
 func (s *MongoEventStore) GetExecutionsByWorkflow(ctx context.Context, workflowID string) ([]ExecutionSummary, error) {
 	// Find all execution.started events for this workflow
+	// Check both data.workflow_id and extensions.workflowid for compatibility
 	filter := map[string]any{
-		"type":             "orchestration.execution.started",
-		"data.workflow_id": workflowID,
+		"type": "orchestration.execution.started",
+		"$or": []map[string]any{
+			{"data.workflow_id": workflowID},
+			{"extensions.workflowid": workflowID},
+		},
 	}
 
 	cursor, err := s.collection.Find(ctx, filter)
