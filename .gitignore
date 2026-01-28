@@ -38,3 +38,6 @@ go.work.sum
 # Build artifacts
 dist/
 tmp/
+
+# Worktrees
+.worktrees/
