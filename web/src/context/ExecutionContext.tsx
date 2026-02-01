@@ -4,6 +4,7 @@ import {
     useState,
     useEffect,
     useCallback,
+    useMemo,
     type ReactNode,
 } from 'react';
 import type { ExecutionEvent, StreamMessage, NodeStatus } from '../types';
@@ -33,20 +34,23 @@ export function ExecutionProvider({ executionId, children }: Props) {
         setEvents([]);
     }, []);
 
-    // Derive node statuses from events
-    const nodeStatuses = new Map<string, NodeStatus>();
-    events.forEach((evt) => {
-        if (!evt.node_id) return;
-        if (evt.type.includes('scheduled')) {
-            nodeStatuses.set(evt.node_id, 'scheduled');
-        } else if (evt.type.includes('started')) {
-            nodeStatuses.set(evt.node_id, 'running');
-        } else if (evt.type.includes('completed')) {
-            nodeStatuses.set(evt.node_id, 'completed');
-        } else if (evt.type.includes('failed')) {
-            nodeStatuses.set(evt.node_id, 'failed');
-        }
-    });
+    // Derive node statuses from events (memoized to prevent unnecessary re-renders)
+    const nodeStatuses = useMemo(() => {
+        const statuses = new Map<string, NodeStatus>();
+        events.forEach((evt) => {
+            if (!evt.node_id) return;
+            if (evt.type.includes('scheduled')) {
+                statuses.set(evt.node_id, 'scheduled');
+            } else if (evt.type.includes('started')) {
+                statuses.set(evt.node_id, 'running');
+            } else if (evt.type.includes('completed')) {
+                statuses.set(evt.node_id, 'completed');
+            } else if (evt.type.includes('failed')) {
+                statuses.set(evt.node_id, 'failed');
+            }
+        });
+        return statuses;
+    }, [events]);
 
     useEffect(() => {
         if (!executionId) {
@@ -57,8 +61,10 @@ export function ExecutionProvider({ executionId, children }: Props) {
 
         let ws: WebSocket | null = null;
         let reconnectTimeout: ReturnType<typeof setTimeout>;
+        let disposed = false;
 
         const connect = () => {
+            if (disposed) return;
             setConnectionStatus('connecting');
 
             ws = new WebSocket(getStreamUrl(executionId));
@@ -86,8 +92,9 @@ export function ExecutionProvider({ executionId, children }: Props) {
 
             ws.onclose = () => {
                 setConnectionStatus('disconnected');
-                // Reconnect after 2 seconds
-                reconnectTimeout = setTimeout(connect, 2000);
+                if (!disposed) {
+                    reconnectTimeout = setTimeout(connect, 2000);
+                }
             };
 
             ws.onerror = (err) => {
@@ -99,15 +106,20 @@ export function ExecutionProvider({ executionId, children }: Props) {
         // Load existing events first, then connect
         fetchExecutionEvents(executionId)
             .then((existingEvents) => {
-                setEvents(existingEvents);
-                connect();
+                if (!disposed) {
+                    setEvents(existingEvents);
+                    connect();
+                }
             })
             .catch((err) => {
                 console.error('Failed to load initial events:', err);
-                connect();
+                if (!disposed) {
+                    connect();
+                }
             });
 
         return () => {
+            disposed = true;
             clearTimeout(reconnectTimeout);
             ws?.close();
         };

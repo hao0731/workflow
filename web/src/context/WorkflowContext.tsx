@@ -61,10 +61,11 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
 
     // Load workflow details when ID changes
     useEffect(() => {
+        setCurrentExecutionId(null);
+
         if (!currentWorkflowId) {
             setCurrentWorkflow(null);
             setExecutions([]);
-            setCurrentExecutionId(null);
             return;
         }
 

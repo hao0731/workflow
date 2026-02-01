@@ -27,36 +27,58 @@ export default function WorkflowCanvas() {
     const { nodeStatuses } = useExecution();
     const { dispatch } = useUI();
 
-    // Convert workflow to React Flow nodes/edges
-    const { rawNodes, rawEdges } = useMemo(() => {
+    // Build structural nodes/edges from workflow topology only (stable across status changes)
+    const { structuralNodes, structuralEdges } = useMemo(() => {
         if (!currentWorkflow) {
-            return { rawNodes: [], rawEdges: [] };
+            return { structuralNodes: [], structuralEdges: [] };
         }
 
-        const rawNodes: CustomNodeType[] = currentWorkflow.nodes.map((n) => ({
+        const structuralNodes: CustomNodeType[] = currentWorkflow.nodes.map((n) => ({
             id: n.id,
             type: 'custom',
-            position: { x: 0, y: 0 }, // Will be set by Dagre
+            position: { x: 0, y: 0 },
+            initialWidth: 180,
+            initialHeight: 70,
             data: {
                 label: n.name || n.id,
                 type: n.type,
-                status: (nodeStatuses.get(n.id) || 'pending') as NodeStatus,
+                status: 'pending' as NodeStatus,
             },
         }));
 
-        const rawEdges: Edge[] = currentWorkflow.connections.map((c, i) => ({
+        const structuralEdges: Edge[] = currentWorkflow.connections.map((c, i) => ({
             id: `e-${c.from_node}-${c.to_node}-${i}`,
             source: c.from_node,
             target: c.to_node,
-            animated: nodeStatuses.get(c.from_node) === 'running',
             style: { stroke: '#6b7280' },
         }));
 
-        return { rawNodes, rawEdges };
-    }, [currentWorkflow, nodeStatuses]);
+        return { structuralNodes, structuralEdges };
+    }, [currentWorkflow]);
 
-    // Apply Dagre layout
-    const { nodes, edges } = useDagreLayout(rawNodes as Node[], rawEdges);
+    // Apply layout based on stable structure
+    const { nodes: layoutedNodes, edges: layoutedEdges } = useDagreLayout(
+        structuralNodes as Node[],
+        structuralEdges,
+    );
+
+    // Apply status updates to layouted nodes/edges without changing structure
+    const nodes = useMemo(() => {
+        return layoutedNodes.map((node) => ({
+            ...node,
+            data: {
+                ...node.data,
+                status: (nodeStatuses.get(node.id) || 'pending') as NodeStatus,
+            },
+        }));
+    }, [layoutedNodes, nodeStatuses]);
+
+    const edges = useMemo(() => {
+        return layoutedEdges.map((edge) => ({
+            ...edge,
+            animated: nodeStatuses.get(edge.source) === 'running',
+        }));
+    }, [layoutedEdges, nodeStatuses]);
 
     const onNodeClick = useCallback(
         (_: React.MouseEvent, node: Node) => {
