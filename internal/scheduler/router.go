@@ -157,6 +157,7 @@ func (r *EventRouter) handleMessage(ctx context.Context, msg *nats.Msg) error {
 		startEvent.SetSource(engine.EventSource)
 		startEvent.SetType(engine.ExecutionStarted)
 		startEvent.SetSubject(executionID)
+		startEvent.SetExtension("workflowid", wf.ID)
 		if parentExecutionID != "" {
 			startEvent.SetExtension("parentexecutionid", parentExecutionID)
 		}
