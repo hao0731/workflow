@@ -219,8 +219,11 @@ func main() {
 	publishWorker := worker.NewWorker(
 		engine.PublishEvent,
 		func(ctx context.Context, input, params map[string]any) (engine.NodeResult, error) {
-			// Get execution ID from context or generate
-			execID := uuid.New().String()
+			// Use execution ID from dispatch context (injected by worker)
+			execID, _ := input["_execution_id"].(string)
+			if execID == "" {
+				execID = uuid.New().String()
+			}
 			return publishExecutor.Execute(ctx, execID, input, params)
 		},
 		eventbus.NewNATSEventBus(js, "workflow.nodes.PublishEvent", "worker-publish", eventbus.WithLogger(logger)),
