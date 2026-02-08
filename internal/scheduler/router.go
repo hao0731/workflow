@@ -161,6 +161,7 @@ func (r *EventRouter) handleMessage(ctx context.Context, msg *nats.Msg) error {
 		if parentExecutionID != "" {
 			startEvent.SetExtension("parentexecutionid", parentExecutionID)
 		}
+		startEvent.SetExtension("triggeredbyevent", domain+"."+eventName)
 		_ = startEvent.SetData(cloudevents.ApplicationJSON, engine.ExecutionStartedData{
 			WorkflowID: wf.ID,
 			InputData:  payload,

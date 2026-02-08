@@ -137,4 +137,9 @@ func TestEventRouter_HandleMessage_SetsWorkflowIDExtension(t *testing.T) {
 	var data engine.ExecutionStartedData
 	require.NoError(t, publishedEvent.DataAs(&data))
 	assert.Equal(t, "chat-new-member", data.WorkflowID)
+
+	// Verify triggeredbyevent extension is set
+	triggeredBy, ok := storedEvent.Extensions()["triggeredbyevent"].(string)
+	assert.True(t, ok, "triggeredbyevent extension must be set")
+	assert.Equal(t, "hr.new_employee", triggeredBy)
 }
