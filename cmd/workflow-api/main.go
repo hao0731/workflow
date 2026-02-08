@@ -144,7 +144,8 @@ func main() {
 	workflowHandler.RegisterRoutes(apiGroup)
 
 	// Execution routes
-	executionHandler := api.NewExecutionHandler(eventStore)
+	execStore := eventstore.NewMongoExecutionStore(db, "executions")
+	executionHandler := api.NewExecutionHandler(eventStore, api.WithExecutionStore(execStore))
 	executionHandler.RegisterRoutes(apiGroup)
 
 	// Stream routes

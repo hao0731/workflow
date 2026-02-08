@@ -8,12 +8,14 @@ import (
 	cloudevents "github.com/cloudevents/sdk-go/v2"
 
 	"github.com/cheriehsieh/orchestration/internal/engine"
+	"github.com/cheriehsieh/orchestration/internal/eventbus"
 	"github.com/cheriehsieh/orchestration/internal/eventstore"
 )
 
 // ExecutionLinkHandler handles ExecutionStarted events to maintain parent-child links.
 type ExecutionLinkHandler struct {
 	executionStore eventstore.ExecutionStore
+	subscriber     eventbus.Subscriber
 	logger         *slog.Logger
 }
 
@@ -27,6 +29,13 @@ func WithLinkHandlerLogger(logger *slog.Logger) ExecutionLinkHandlerOption {
 	}
 }
 
+// WithLinkHandlerSubscriber sets the event subscriber.
+func WithLinkHandlerSubscriber(sub eventbus.Subscriber) ExecutionLinkHandlerOption {
+	return func(h *ExecutionLinkHandler) {
+		h.subscriber = sub
+	}
+}
+
 // NewExecutionLinkHandler creates a new handler for execution linking.
 func NewExecutionLinkHandler(store eventstore.ExecutionStore, opts ...ExecutionLinkHandlerOption) *ExecutionLinkHandler {
 	h := &ExecutionLinkHandler{
@@ -37,6 +46,17 @@ func NewExecutionLinkHandler(store eventstore.ExecutionStore, opts ...ExecutionL
 		opt(h)
 	}
 	return h
+}
+
+// Start begins listening for ExecutionStarted events.
+func (h *ExecutionLinkHandler) Start(ctx context.Context) error {
+	if h.subscriber == nil {
+		return nil
+	}
+	h.logger.Info("execution link handler started")
+	return h.subscriber.Subscribe(ctx, func(ctx context.Context, event cloudevents.Event) error {
+		return h.Handle(ctx, event)
+	})
 }
 
 // Handle processes an ExecutionStarted event and creates/links executions.

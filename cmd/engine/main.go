@@ -144,6 +144,12 @@ func main() {
 
 	eventStoreImpl := eventstore.NewMongoEventStore(db, "events")
 
+	// 6b. Initialize Execution Store for linking
+	executionStore := eventstore.NewMongoExecutionStore(db, "executions")
+	if err := executionStore.EnsureIndexes(context.Background()); err != nil {
+		logger.Warn("failed to ensure execution indexes", slog.Any("error", err))
+	}
+
 	// 7. Initialize Orchestrator
 	joinStore := engine.NewInMemoryJoinStateStore()
 	joinManager := engine.NewJoinStateManager(joinStore)
@@ -172,6 +178,14 @@ func main() {
 	eventRouter := scheduler.NewEventRouter(
 		js, workflowRepo, eventStoreImpl, orchestratorSub,
 		scheduler.WithEventRouterLogger(logger),
+	)
+
+	// 9b. Initialize Execution Link Handler
+	linkHandlerSub := eventbus.NewNATSEventBus(js, "workflow.events.execution", "link-handler", eventbus.WithLogger(logger))
+	linkHandler := scheduler.NewExecutionLinkHandler(
+		executionStore,
+		scheduler.WithLinkHandlerLogger(logger),
+		scheduler.WithLinkHandlerSubscriber(linkHandlerSub),
 	)
 
 	// 10. Initialize Workers
@@ -219,7 +233,7 @@ func main() {
 	defer cancel()
 
 	components := []interface{ Start(context.Context) error }{
-		orchestrator, sched, eventRouter, startWorker, actionWorker, publishWorker,
+		orchestrator, sched, eventRouter, linkHandler, startWorker, actionWorker, publishWorker,
 	}
 
 	for _, c := range components {
