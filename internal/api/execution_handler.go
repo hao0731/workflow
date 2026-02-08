@@ -11,12 +11,27 @@ import (
 
 // ExecutionHandler handles execution-related API requests.
 type ExecutionHandler struct {
-	eventStore eventstore.EventStore
+	eventStore     eventstore.EventStore
+	executionStore eventstore.ExecutionStore
+}
+
+// ExecutionHandlerOption is a functional option for ExecutionHandler.
+type ExecutionHandlerOption func(*ExecutionHandler)
+
+// WithExecutionStore sets the execution store for linking queries.
+func WithExecutionStore(store eventstore.ExecutionStore) ExecutionHandlerOption {
+	return func(h *ExecutionHandler) {
+		h.executionStore = store
+	}
 }
 
 // NewExecutionHandler creates a new ExecutionHandler.
-func NewExecutionHandler(es eventstore.EventStore) *ExecutionHandler {
-	return &ExecutionHandler{eventStore: es}
+func NewExecutionHandler(es eventstore.EventStore, opts ...ExecutionHandlerOption) *ExecutionHandler {
+	h := &ExecutionHandler{eventStore: es}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
 }
 
 // RegisterRoutes registers execution API routes.
@@ -24,6 +39,7 @@ func (h *ExecutionHandler) RegisterRoutes(g *echo.Group) {
 	g.GET("/workflows/:id/executions", h.ListExecutions)
 	g.GET("/executions/:id", h.GetExecution)
 	g.GET("/executions/:id/events", h.GetEvents)
+	g.GET("/executions/:id/children", h.GetChildren)
 }
 
 // ListExecutions handles GET /api/workflows/:id/executions
@@ -135,4 +151,31 @@ func (h *ExecutionHandler) GetEvents(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, resp)
+}
+
+// GetChildren handles GET /api/executions/:id/children
+func (h *ExecutionHandler) GetChildren(c echo.Context) error {
+	id := c.Param("id")
+
+	if h.executionStore == nil {
+		return c.JSON(http.StatusNotImplemented, map[string]string{
+			"error": "execution store not configured",
+		})
+	}
+
+	children, err := h.executionStore.GetChildren(c.Request().Context(), id)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": err.Error(),
+		})
+	}
+
+	if children == nil {
+		children = []*eventstore.Execution{}
+	}
+
+	return c.JSON(http.StatusOK, map[string]any{
+		"parent_execution_id": id,
+		"children":            children,
+	})
 }

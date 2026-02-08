@@ -55,6 +55,50 @@ func (m *mockEventStore) GetEventsByExecution(ctx context.Context, executionID s
 	return filtered, nil
 }
 
+// mockExecutionStoreForAPI is a test double for eventstore.ExecutionStore.
+type mockExecutionStoreForAPI struct {
+	executions map[string]*eventstore.Execution
+}
+
+func newMockExecutionStoreForAPI() *mockExecutionStoreForAPI {
+	return &mockExecutionStoreForAPI{
+		executions: make(map[string]*eventstore.Execution),
+	}
+}
+
+func (m *mockExecutionStoreForAPI) Create(_ context.Context, exec *eventstore.Execution) error {
+	m.executions[exec.ID] = exec
+	return nil
+}
+
+func (m *mockExecutionStoreForAPI) GetByID(_ context.Context, id string) (*eventstore.Execution, error) {
+	return m.executions[id], nil
+}
+
+func (m *mockExecutionStoreForAPI) GetChildren(_ context.Context, parentID string) ([]*eventstore.Execution, error) {
+	var children []*eventstore.Execution
+	for _, exec := range m.executions {
+		if exec.ParentExecutionID == parentID {
+			children = append(children, exec)
+		}
+	}
+	return children, nil
+}
+
+func (m *mockExecutionStoreForAPI) AddChildExecution(_ context.Context, parentID, childID string) error {
+	if parent, ok := m.executions[parentID]; ok {
+		parent.ChildExecutionIDs = append(parent.ChildExecutionIDs, childID)
+	}
+	return nil
+}
+
+func (m *mockExecutionStoreForAPI) UpdateStatus(_ context.Context, id, status string) error {
+	if exec, ok := m.executions[id]; ok {
+		exec.Status = status
+	}
+	return nil
+}
+
 func createTestEvent(id, eventType, subject string, data map[string]any, eventTime time.Time) cloudevents.Event {
 	evt := cloudevents.NewEvent()
 	evt.SetID(id)
@@ -284,4 +328,74 @@ func TestRegisterRoutes(t *testing.T) {
 
 	assert.True(t, foundGetExecution, "GET /api/executions/:id route should be registered")
 	assert.True(t, foundGetEvents, "GET /api/executions/:id/events route should be registered")
+}
+
+func TestGetChildren_Success(t *testing.T) {
+	store := newMockEventStore()
+	execStore := newMockExecutionStoreForAPI()
+
+	// Setup parent and children
+	execStore.executions["parent-1"] = &eventstore.Execution{
+		ID:                "parent-1",
+		WorkflowID:        "hr-onboarding",
+		Status:            "completed",
+		ChildExecutionIDs: []string{"child-1", "child-2"},
+	}
+	execStore.executions["child-1"] = &eventstore.Execution{
+		ID:                "child-1",
+		WorkflowID:        "chat-new-member",
+		Status:            "completed",
+		ParentExecutionID: "parent-1",
+		TriggeredByEvent:  "hr.new_employee",
+	}
+	execStore.executions["child-2"] = &eventstore.Execution{
+		ID:                "child-2",
+		WorkflowID:        "it-provisioning",
+		Status:            "running",
+		ParentExecutionID: "parent-1",
+		TriggeredByEvent:  "hr.new_employee",
+	}
+
+	handler := NewExecutionHandler(store, WithExecutionStore(execStore))
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodGet, "/api/executions/parent-1/children", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.SetParamNames("id")
+	c.SetParamValues("parent-1")
+
+	err := handler.GetChildren(c)
+
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), `"child-1"`)
+	assert.Contains(t, rec.Body.String(), `"child-2"`)
+	assert.Contains(t, rec.Body.String(), `"triggered_by_event":"hr.new_employee"`)
+}
+
+func TestGetChildren_NoChildren(t *testing.T) {
+	store := newMockEventStore()
+	execStore := newMockExecutionStoreForAPI()
+
+	execStore.executions["leaf-1"] = &eventstore.Execution{
+		ID:         "leaf-1",
+		WorkflowID: "simple-wf",
+		Status:     "completed",
+	}
+
+	handler := NewExecutionHandler(store, WithExecutionStore(execStore))
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodGet, "/api/executions/leaf-1/children", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.SetParamNames("id")
+	c.SetParamValues("leaf-1")
+
+	err := handler.GetChildren(c)
+
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), `"children":[]`)
 }
