@@ -46,3 +46,51 @@ func TestMongoExecutionStore_Create(t *testing.T) {
 	assert.Equal(t, "wf-456", found.WorkflowID)
 	assert.Equal(t, StatusRunning, found.Status)
 }
+
+func TestMongoExecutionStore_GetChildren(t *testing.T) {
+	db, cleanup := setupTestMongo(t)
+	defer cleanup()
+
+	store := NewMongoExecutionStore(db, "executions")
+	ctx := context.Background()
+
+	// Create parent
+	parent := &Execution{ID: "parent-1", WorkflowID: "wf-parent", Status: StatusRunning, StartedAt: time.Now()}
+	require.NoError(t, store.Create(ctx, parent))
+
+	// Create children with parent reference
+	child1 := &Execution{ID: "child-1", WorkflowID: "wf-child", Status: StatusRunning, StartedAt: time.Now(), ParentExecutionID: "parent-1"}
+	child2 := &Execution{ID: "child-2", WorkflowID: "wf-child", Status: StatusCompleted, StartedAt: time.Now(), ParentExecutionID: "parent-1"}
+	require.NoError(t, store.Create(ctx, child1))
+	require.NoError(t, store.Create(ctx, child2))
+
+	// Query children
+	children, err := store.GetChildren(ctx, "parent-1")
+	require.NoError(t, err)
+	assert.Len(t, children, 2)
+}
+
+func TestMongoExecutionStore_AddChildExecution(t *testing.T) {
+	db, cleanup := setupTestMongo(t)
+	defer cleanup()
+
+	store := NewMongoExecutionStore(db, "executions")
+	ctx := context.Background()
+
+	// Create parent
+	parent := &Execution{ID: "parent-add", WorkflowID: "wf-parent", Status: StatusRunning, StartedAt: time.Now()}
+	require.NoError(t, store.Create(ctx, parent))
+
+	// Add child references
+	require.NoError(t, store.AddChildExecution(ctx, "parent-add", "child-a"))
+	require.NoError(t, store.AddChildExecution(ctx, "parent-add", "child-b"))
+	// Duplicate should be ignored (addToSet)
+	require.NoError(t, store.AddChildExecution(ctx, "parent-add", "child-a"))
+
+	// Verify
+	found, err := store.GetByID(ctx, "parent-add")
+	require.NoError(t, err)
+	assert.Len(t, found.ChildExecutionIDs, 2)
+	assert.Contains(t, found.ChildExecutionIDs, "child-a")
+	assert.Contains(t, found.ChildExecutionIDs, "child-b")
+}
