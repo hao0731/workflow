@@ -2,6 +2,7 @@ package eventbus
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -73,7 +74,7 @@ func (b *NATSEventBus) Subscribe(ctx context.Context, handler EventHandler) erro
 			// Fetch with short timeout to allow checking for new messages frequently
 			msgs, err := sub.Fetch(10, nats.MaxWait(500*time.Millisecond))
 			if err != nil {
-				if err == context.Canceled || err == context.DeadlineExceeded || err == nats.ErrTimeout {
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, nats.ErrTimeout) {
 					continue // Timeout is expected when no messages, just retry
 				}
 				b.logger.WarnContext(ctx, "fetch error", slog.Any("error", err))

@@ -3,7 +3,6 @@ package config
 import (
 	"os"
 	"strconv"
-	"time"
 
 	"github.com/joho/godotenv"
 )
@@ -100,15 +99,6 @@ func getBoolEnv(key string, fallback bool) bool {
 	if value, exists := os.LookupEnv(key); exists {
 		if b, err := strconv.ParseBool(value); err == nil {
 			return b
-		}
-	}
-	return fallback
-}
-
-func getDurationEnv(key string, fallback time.Duration) time.Duration {
-	if value, exists := os.LookupEnv(key); exists {
-		if d, err := time.ParseDuration(value); err == nil {
-			return d
 		}
 	}
 	return fallback

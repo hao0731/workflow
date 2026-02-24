@@ -47,7 +47,7 @@ func (s *MongoExecutionStore) GetChildren(ctx context.Context, parentID string) 
 	if err != nil {
 		return nil, err
 	}
-	defer cursor.Close(ctx)
+	defer func() { _ = cursor.Close(ctx) }()
 
 	var children []*Execution
 	if err := cursor.All(ctx, &children); err != nil {

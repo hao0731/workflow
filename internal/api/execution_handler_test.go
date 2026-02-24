@@ -318,10 +318,10 @@ func TestRegisterRoutes(t *testing.T) {
 	routes := e.Routes()
 	var foundGetExecution, foundGetEvents bool
 	for _, r := range routes {
-		if r.Path == "/api/executions/:id" && r.Method == "GET" {
+		if r.Path == "/api/executions/:id" && r.Method == http.MethodGet {
 			foundGetExecution = true
 		}
-		if r.Path == "/api/executions/:id/events" && r.Method == "GET" {
+		if r.Path == "/api/executions/:id/events" && r.Method == http.MethodGet {
 			foundGetEvents = true
 		}
 	}

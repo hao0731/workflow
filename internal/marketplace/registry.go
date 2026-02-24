@@ -152,7 +152,7 @@ func (r *MongoEventRegistry) List(ctx context.Context, domain string) ([]*EventD
 	if err != nil {
 		return nil, err
 	}
-	defer cursor.Close(ctx)
+	defer func() { _ = cursor.Close(ctx) }()
 
 	var results []*EventDefinition
 	if err := cursor.All(ctx, &results); err != nil {

@@ -205,9 +205,10 @@ connections:
 	var userConn, ordersConn *ConnectionDef
 	for i := range def.Connections {
 		if def.Connections[i].To == "merge" {
-			if def.Connections[i].ToPort == "user" {
+			switch def.Connections[i].ToPort {
+			case "user":
 				userConn = &def.Connections[i]
-			} else if def.Connections[i].ToPort == "orders" {
+			case "orders":
 				ordersConn = &def.Connections[i]
 			}
 		}

@@ -36,7 +36,7 @@ func (s *MongoEventStore) GetBySubject(ctx context.Context, subject string) ([]c
 	if err != nil {
 		return nil, err
 	}
-	defer cursor.Close(ctx)
+	defer func() { _ = cursor.Close(ctx) }()
 
 	var stored []StoredEvent
 	if err := cursor.All(ctx, &stored); err != nil {
@@ -66,7 +66,7 @@ func (s *MongoEventStore) GetExecutionsByWorkflow(ctx context.Context, workflowI
 	if err != nil {
 		return nil, err
 	}
-	defer cursor.Close(ctx)
+	defer func() { _ = cursor.Close(ctx) }()
 
 	var startEvents []StoredEvent
 	if err := cursor.All(ctx, &startEvents); err != nil {
@@ -92,14 +92,15 @@ func (s *MongoEventStore) GetExecutionsByWorkflow(ctx context.Context, workflowI
 			var statusEvts []StoredEvent
 			if statusEvents.All(ctx, &statusEvts) == nil && len(statusEvts) > 0 {
 				for _, evt := range statusEvts {
-					if evt.Type == "orchestration.execution.completed" {
+					switch evt.Type {
+					case "orchestration.execution.completed":
 						status = "completed"
-					} else if evt.Type == "orchestration.execution.failed" {
+					case "orchestration.execution.failed":
 						status = "failed"
 					}
 				}
 			}
-			statusEvents.Close(ctx)
+			_ = statusEvents.Close(ctx)
 		}
 
 		summaries = append(summaries, ExecutionSummary{
@@ -130,7 +131,7 @@ func (s *MongoEventStore) GetEventsByExecution(ctx context.Context, executionID 
 	if err != nil {
 		return nil, err
 	}
-	defer cursor.Close(ctx)
+	defer func() { _ = cursor.Close(ctx) }()
 
 	var stored []StoredEvent
 	if err := cursor.All(ctx, &stored); err != nil {

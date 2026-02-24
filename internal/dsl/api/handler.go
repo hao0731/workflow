@@ -146,8 +146,8 @@ func (h *WorkflowHandler) Create(c echo.Context) error {
 	}
 
 	// Validate
-	if err := h.validator.Validate(def); err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	if validateErr := h.validator.Validate(def); validateErr != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": validateErr.Error()})
 	}
 
 	// Convert to engine model
@@ -287,8 +287,8 @@ func (h *WorkflowHandler) Update(c echo.Context) error {
 	}
 
 	// Validate
-	if err := h.validator.Validate(def); err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	if validateErr := h.validator.Validate(def); validateErr != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": validateErr.Error()})
 	}
 
 	// Convert to engine model

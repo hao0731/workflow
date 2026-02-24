@@ -77,7 +77,7 @@ func (r *MongoRepository) List(ctx context.Context) ([]NodeRegistration, error) 
 	if err != nil {
 		return nil, err
 	}
-	defer cursor.Close(ctx)
+	defer func() { _ = cursor.Close(ctx) }()
 
 	var registrations []NodeRegistration
 	if err := cursor.All(ctx, &registrations); err != nil {

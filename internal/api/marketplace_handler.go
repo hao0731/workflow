@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
 
@@ -89,7 +90,7 @@ func (h *MarketplaceHandler) Get(c echo.Context) error {
 
 	event, err := h.registry.Get(c.Request().Context(), domain, name)
 	if err != nil {
-		if err == marketplace.ErrEventNotFound {
+		if errors.Is(err, marketplace.ErrEventNotFound) {
 			return c.JSON(http.StatusNotFound, map[string]string{"error": "event not found"})
 		}
 		h.logger.Error("failed to get event", slog.String("error", err.Error()))

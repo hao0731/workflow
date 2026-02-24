@@ -78,7 +78,10 @@ func (e *PublishEventExecutor) Execute(ctx context.Context, executionID string, 
 	_ = event.SetData(cloudevents.ApplicationJSON, payload)
 
 	// Publish to NATS
-	data, _ := json.Marshal(event)
+	data, err := json.Marshal(event)
+	if err != nil {
+		return NodeResult{Port: PortFailure}, fmt.Errorf("marshal event: %w", err)
+	}
 	_, err = e.js.Publish(def.BuildSubject(), data)
 	if err != nil {
 		e.logger.Error("failed to publish marketplace event",

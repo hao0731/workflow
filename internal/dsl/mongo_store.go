@@ -110,7 +110,7 @@ func (s *MongoWorkflowStore) List(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer cursor.Close(ctx)
+	defer func() { _ = cursor.Close(ctx) }()
 
 	var results []struct {
 		ID string `bson:"_id"`
@@ -149,7 +149,7 @@ func (s *MongoWorkflowStore) FindByEventTrigger(ctx context.Context, eventName, 
 	if err != nil {
 		return nil, err
 	}
-	defer cursor.Close(ctx)
+	defer func() { _ = cursor.Close(ctx) }()
 
 	var matching []*engine.Workflow
 	for cursor.Next(ctx) {

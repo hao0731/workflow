@@ -305,7 +305,7 @@ func (r *InMemoryWorkflowRepo) GetByID(_ context.Context, id string) (*engine.Wo
 }
 
 // FindByEventTrigger finds workflows that match the given event trigger.
-func (r *InMemoryWorkflowRepo) FindByEventTrigger(_ context.Context, eventName, domain string) ([]*engine.Workflow, error) {
+func (r *InMemoryWorkflowRepo) FindByEventTrigger(_ context.Context, eventName, domain string) ([]*engine.Workflow, error) { //nolint:unparam // implements WorkflowRepository interface
 	var matches []*engine.Workflow
 	for _, wf := range r.workflows {
 		start := wf.GetStartNode()

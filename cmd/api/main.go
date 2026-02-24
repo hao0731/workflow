@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -201,7 +202,6 @@ func (h *Handler) listExecutionEvents(c echo.Context) error {
 			e.Type() == engine.NodeExecutionStarted ||
 			e.Type() == engine.NodeExecutionCompleted ||
 			e.Type() == engine.NodeExecutionFailed {
-
 			var data map[string]any
 			_ = e.DataAs(&data)
 
@@ -303,7 +303,19 @@ func main() {
 	e.HideBanner = true
 
 	// Middleware
-	e.Use(middleware.Logger())
+	e.Use(middleware.RequestLoggerWithConfig(middleware.RequestLoggerConfig{
+		LogStatus: true,
+		LogURI:    true,
+		LogMethod: true,
+		LogValuesFunc: func(c echo.Context, v middleware.RequestLoggerValues) error {
+			logger.Info("request",
+				slog.String("method", v.Method),
+				slog.String("uri", v.URI),
+				slog.Int("status", v.Status),
+			)
+			return nil
+		},
+	}))
 	e.Use(middleware.Recover())
 	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
 		AllowOrigins: []string{"http://localhost:5173", "http://localhost:3000"},
@@ -330,7 +342,7 @@ func main() {
 			port = "8081"
 		}
 		logger.Info("API server listening", slog.String("port", port))
-		if err := e.Start(":" + port); err != nil && err != http.ErrServerClosed {
+		if err := e.Start(":" + port); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("server error", slog.Any("error", err))
 			os.Exit(1)
 		}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"os"
@@ -47,7 +48,7 @@ func main() {
 		logger.Error("failed to connect to MongoDB", slog.Any("error", err))
 		os.Exit(1)
 	}
-	defer mongoClient.Disconnect(context.Background())
+	defer func() { _ = mongoClient.Disconnect(context.Background()) }()
 
 	db := mongoClient.Database(cfg.MongoDatabase)
 	eventStore := eventstore.NewMongoEventStore(db, "events")
@@ -168,7 +169,7 @@ func main() {
 			port = "8083"
 		}
 		logger.Info("workflow API server listening", slog.String("port", port))
-		if err := e.Start(":" + port); err != nil && err != http.ErrServerClosed {
+		if err := e.Start(":" + port); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("server error", slog.Any("error", err))
 			os.Exit(1)
 		}

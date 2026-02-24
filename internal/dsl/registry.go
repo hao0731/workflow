@@ -87,8 +87,8 @@ func (r *WorkflowRegistry) LoadFile(ctx context.Context, path string) error {
 		return fmt.Errorf("parse failed: %w", err)
 	}
 
-	if err := r.validator.Validate(def); err != nil {
-		return fmt.Errorf("validation failed: %w", err)
+	if validateErr := r.validator.Validate(def); validateErr != nil {
+		return fmt.Errorf("validation failed: %w", validateErr)
 	}
 
 	wf, err := r.converter.Convert(def)
