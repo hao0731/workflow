@@ -20,6 +20,24 @@ services:
     volumes:
       - nats_data:/data
 
+  cassandra:
+    image: cassandra:4.1
+    container_name: orchestration-cassandra
+    ports:
+      - "9042:9042"
+    volumes:
+      - cassandra_data:/var/lib/cassandra
+    environment:
+      CASSANDRA_CLUSTER_NAME: orchestration
+      MAX_HEAP_SIZE: 512M
+      HEAP_NEWSIZE: 128M
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'DESCRIBE KEYSPACES' || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+
 volumes:
   mongodb_data:
   nats_data:
+  cassandra_data:
