@@ -28,6 +28,14 @@ type Config struct {
 
 	// Workflow
 	WorkflowStore string
+
+	// Cassandra
+	CassandraHosts    string
+	CassandraKeyspace string
+	CassandraPort     int
+
+	// Migration
+	MigrationPhase string // "shadow", "read_switch", "cleanup"
 }
 
 // Load reads configuration from environment variables.
@@ -54,6 +62,14 @@ func Load() *Config {
 
 		// Workflow
 		WorkflowStore: getEnv("WORKFLOW_STORE", "mongo"),
+
+		// Cassandra
+		CassandraHosts:    getEnv("CASSANDRA_HOSTS", "localhost"),
+		CassandraKeyspace: getEnv("CASSANDRA_KEYSPACE", "orchestration"),
+		CassandraPort:     getIntEnv("CASSANDRA_PORT", 9042),
+
+		// Migration
+		MigrationPhase: getEnv("MIGRATION_PHASE", "shadow"),
 	}
 }
 
