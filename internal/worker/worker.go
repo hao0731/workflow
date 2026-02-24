@@ -91,8 +91,15 @@ func (w *Worker) handleDispatch(ctx context.Context, event cloudevents.Event) er
 		slog.String("execution_id", dispatch.ExecutionID),
 	)
 
+	// Inject execution context into input so handlers can access it
+	input := dispatch.InputData
+	if input == nil {
+		input = make(map[string]any)
+	}
+	input["_execution_id"] = dispatch.ExecutionID
+
 	// Execute the handler
-	result, err := w.handler(ctx, dispatch.InputData, dispatch.Parameters)
+	result, err := w.handler(ctx, input, dispatch.Parameters)
 
 	// Build result event
 	resultEvent := w.newEvent(scheduler.NodeResult, dispatch.ExecutionID)

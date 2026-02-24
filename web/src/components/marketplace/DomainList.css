@@ -1,0 +1,126 @@
+.domain-list {
+    padding: 0.5rem;
+    overflow-y: auto;
+    height: 100%;
+}
+
+.domain-list.loading,
+.domain-list.error,
+.domain-list.empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+    color: var(--text-secondary);
+    padding: 2rem;
+}
+
+.domain-list .spinner {
+    width: 24px;
+    height: 24px;
+    border: 2px solid var(--border-color);
+    border-top-color: var(--primary-color);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+.domain-list .error-icon {
+    font-size: 1.5rem;
+}
+
+.domain-list .empty-icon {
+    font-size: 2rem;
+}
+
+.domain-group {
+    margin-bottom: 1rem;
+}
+
+.domain-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    background: var(--bg-secondary);
+    border-radius: 4px;
+    margin-bottom: 0.25rem;
+}
+
+.domain-icon {
+    font-size: 1rem;
+}
+
+.domain-name {
+    flex: 1;
+    text-transform: capitalize;
+}
+
+.event-count {
+    background: var(--primary-color);
+    color: white;
+    font-size: 0.75rem;
+    padding: 0.125rem 0.5rem;
+    border-radius: 9999px;
+    font-weight: 500;
+}
+
+.event-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.event-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    cursor: pointer;
+    border-radius: 4px;
+    transition: background-color 0.2s;
+}
+
+.event-item:hover {
+    background: var(--bg-hover);
+}
+
+.event-item.selected {
+    background: var(--primary-color-light);
+    border-left: 3px solid var(--primary-color);
+}
+
+.event-icon {
+    color: var(--warning-color);
+    font-size: 0.875rem;
+    margin-top: 0.125rem;
+}
+
+.event-info {
+    display: flex;
+    flex-direction: column;
+    gap: 0.125rem;
+    min-width: 0;
+}
+
+.event-name {
+    font-weight: 500;
+    color: var(--text-primary);
+    word-break: break-word;
+}
+
+.event-description {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}

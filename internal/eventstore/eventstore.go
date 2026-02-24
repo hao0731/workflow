@@ -32,6 +32,8 @@ type EventStore interface {
 	Append(ctx context.Context, event cloudevents.Event) error
 	GetBySubject(ctx context.Context, subject string) ([]cloudevents.Event, error)
 	GetExecutionsByWorkflow(ctx context.Context, workflowID string) ([]ExecutionSummary, error)
+	// GetEventsByExecution returns all events for a given execution ID.
+	GetEventsByExecution(ctx context.Context, executionID string, since *time.Time) ([]cloudevents.Event, error)
 }
 
 // FromCloudEvent converts a CloudEvents event to a StoredEvent.

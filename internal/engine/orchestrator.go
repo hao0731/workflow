@@ -62,6 +62,10 @@ func WithJoinStateManager(manager *JoinStateManager) OrchestratorOption {
 
 func (o *Orchestrator) Start(ctx context.Context) error {
 	return o.subscriber.Subscribe(ctx, func(ctx context.Context, event cloudevents.Event) error {
+		slog.InfoContext(ctx, "event received",
+			slog.String("event_type", event.Type()),
+			slog.String("subject", event.Subject()),
+		)
 		return o.handleEvent(ctx, event)
 	})
 }

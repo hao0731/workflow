@@ -3,10 +3,9 @@ services:
     image: mongo:7.0
     container_name: orchestration-mongodb
     ports:
-      - "27017:27017"
+      - "27018:27017"
     volumes:
       - mongodb_data:/data/db
-    network_mode: host
     environment:
       MONGO_INITDB_DATABASE: orchestration
 
@@ -17,8 +16,7 @@ services:
       - "4222:4222"   # Client connections
       - "8222:8222"   # HTTP monitoring
       - "9222:9222"   # WebSocket
-    network_mode: host
-    command: ["--jetstream", "--store_dir=/data", "-m", "8222", "--websocket_port", "9222", "--websocket_no_tls"]
+    command: ["--jetstream", "--store_dir=/data", "-m", "8222"]
     volumes:
       - nats_data:/data
 

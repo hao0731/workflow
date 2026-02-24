@@ -2,8 +2,10 @@ package eventstore
 
 import (
 	"context"
+	"time"
 
 	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 
 	cloudevents "github.com/cloudevents/sdk-go/v2"
 )
@@ -52,9 +54,12 @@ func (s *MongoEventStore) GetBySubject(ctx context.Context, subject string) ([]c
 // It finds all execution.started events and derives status from execution.completed/failed events.
 func (s *MongoEventStore) GetExecutionsByWorkflow(ctx context.Context, workflowID string) ([]ExecutionSummary, error) {
 	// Find all execution.started events for this workflow
+	// Check both data.workflow_id and extensions.workflowid for compatibility
 	filter := map[string]any{
-		"type":             "orchestration.execution.started",
-		"data.workflow_id": workflowID,
+		"type": "orchestration.execution.started",
+		"$or": []map[string]any{
+			{"extensions.workflowid": workflowID},
+		},
 	}
 
 	cursor, err := s.collection.Find(ctx, filter)
@@ -106,4 +111,35 @@ func (s *MongoEventStore) GetExecutionsByWorkflow(ctx context.Context, workflowI
 	}
 
 	return summaries, nil
+}
+
+// GetEventsByExecution returns all events for a given execution ID, optionally filtered by time.
+func (s *MongoEventStore) GetEventsByExecution(ctx context.Context, executionID string, since *time.Time) ([]cloudevents.Event, error) {
+	filter := map[string]any{
+		"subject": executionID,
+	}
+
+	if since != nil {
+		filter["time"] = map[string]any{
+			"$gt": *since,
+		}
+	}
+
+	opts := options.Find().SetSort(map[string]int{"time": 1})
+	cursor, err := s.collection.Find(ctx, filter, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	var stored []StoredEvent
+	if err := cursor.All(ctx, &stored); err != nil {
+		return nil, err
+	}
+
+	events := make([]cloudevents.Event, len(stored))
+	for i, se := range stored {
+		events[i] = se.ToCloudEvent()
+	}
+	return events, nil
 }

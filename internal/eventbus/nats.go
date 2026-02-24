@@ -3,6 +3,7 @@ package eventbus
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"github.com/nats-io/nats.go"
 
@@ -58,6 +59,7 @@ func (b *NATSEventBus) Publish(ctx context.Context, event cloudevents.Event) err
 }
 
 func (b *NATSEventBus) Subscribe(ctx context.Context, handler EventHandler) error {
+	// Use simple PullSubscribe - let NATS use existing consumer config if present
 	sub, err := b.js.PullSubscribe(b.subject, b.consumerName)
 	if err != nil {
 		return err
@@ -68,10 +70,11 @@ func (b *NATSEventBus) Subscribe(ctx context.Context, handler EventHandler) erro
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
-			msgs, err := sub.Fetch(1, nats.Context(ctx))
+			// Fetch with short timeout to allow checking for new messages frequently
+			msgs, err := sub.Fetch(10, nats.MaxWait(500*time.Millisecond))
 			if err != nil {
-				if err == context.Canceled || err == context.DeadlineExceeded {
-					return nil
+				if err == context.Canceled || err == context.DeadlineExceeded || err == nats.ErrTimeout {
+					continue // Timeout is expected when no messages, just retry
 				}
 				b.logger.WarnContext(ctx, "fetch error", slog.Any("error", err))
 				continue
