@@ -1,0 +1,86 @@
+version: "2"
+
+run:
+  timeout: 5m
+  modules-download-mode: readonly
+
+linters:
+  default: standard
+  enable:
+    # Bug detection
+    - bodyclose          # Checks HTTP response body is closed
+    - durationcheck      # Checks for two durations multiplied together
+    - errorlint          # Find issues with error wrapping (Go 1.13+)
+    - fatcontext         # Detects nested contexts in loops
+    - nilerr             # Finds code returning nil even if error is not nil
+    - noctx              # Finds HTTP requests without context.Context
+    - sqlclosecheck      # Checks that sql.Rows/sql.Stmt are closed
+
+    # Code style & simplification
+    - dupl               # Detects duplicate code fragments
+    - misspell           # Finds commonly misspelled English words
+    - prealloc           # Finds slice pre-allocation opportunities
+    - unconvert          # Removes unnecessary type conversions
+    - unparam            # Reports unused function parameters
+    - usestdlibvars      # Detects possibility to use stdlib variables/constants
+    - whitespace         # Detects leading/trailing whitespace
+
+    # Error handling
+    - errname            # Checks sentinel error naming (Err prefix)
+    - errchkjson         # Checks types passed to JSON encoding
+
+    # Performance
+    - copyloopvar        # Detects loop variable copy issues
+
+    # Code organization
+    - grouper            # Analyzes expression groups
+    - importas           # Enforces consistent import aliases
+
+  settings:
+    dupl:
+      threshold: 150
+    errcheck:
+      check-type-assertions: true
+      check-blank: false
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment  # Too noisy for most projects
+    misspell:
+      locale: US
+    unparam:
+      check-exported: false
+
+formatters:
+  enable:
+    - goimports
+
+issues:
+  max-issues-per-linter: 50
+  max-same-issues: 5
+
+  exclude-rules:
+    # Test files can be more relaxed
+    - path: _test\.go
+      linters:
+        - dupl
+        - errcheck
+        - unparam
+        - bodyclose
+
+    # Allow dot imports in test files (testify, etc.)
+    - path: _test\.go
+      text: "dot-imports"
+
+    # Generated code should be excluded
+    - path: "mocks/"
+      linters:
+        - dupl
+        - errcheck
+        - unparam
+        - unused
+
+    # Main function can have long functions
+    - path: cmd/
+      linters:
+        - dupl
