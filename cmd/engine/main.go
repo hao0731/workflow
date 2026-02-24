@@ -6,9 +6,11 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/gocql/gocql"
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -50,6 +52,19 @@ func main() {
 		_ = client.Disconnect(context.Background())
 	}()
 	db := client.Database(cfg.MongoDatabase)
+
+	// 3b. Connect to Cassandra
+	cassandraCluster := gocql.NewCluster(strings.Split(cfg.CassandraHosts, ",")...)
+	cassandraCluster.Port = cfg.CassandraPort
+	cassandraCluster.Keyspace = cfg.CassandraKeyspace
+	cassandraCluster.Consistency = gocql.Quorum
+
+	cassandraSession, err := cassandraCluster.CreateSession()
+	if err != nil {
+		logger.Error("failed to connect to Cassandra", slog.Any("error", err))
+		os.Exit(1)
+	}
+	defer cassandraSession.Close()
 
 	// 4. Connect to NATS
 	nc, err := nats.Connect(cfg.NATSURL)
@@ -149,7 +164,10 @@ func main() {
 
 	workflowRepo := dsl.NewMongoWorkflowStore(db)
 
-	eventStoreImpl := eventstore.NewMongoEventStore(db, "events")
+	// Hybrid Event Store: Cassandra for writes, MongoDB for read models
+	cassandraStore := eventstore.NewCassandraEventStore(cassandraSession)
+	mongoReadModel := eventstore.NewMongoEventStore(db, "events")
+	eventStoreImpl := eventstore.NewHybridEventStore(cassandraStore, mongoReadModel)
 
 	// 6b. Initialize Execution Store for linking
 	executionStore := eventstore.NewMongoExecutionStore(db, "executions")
@@ -193,6 +211,14 @@ func main() {
 		executionStore,
 		scheduler.WithLinkHandlerLogger(logger),
 		scheduler.WithLinkHandlerSubscriber(linkHandlerSub),
+	)
+
+	// 9c. Initialize Projection Consumer (Cassandra → MongoDB)
+	projectionSub := eventbus.NewNATSEventBus(js, "workflow.events.>", "projection-consumer", eventbus.WithLogger(logger))
+	projectionConsumer := eventstore.NewProjectionConsumer(
+		mongoReadModel,
+		eventstore.WithProjectionLogger(logger),
+		eventstore.WithSubscriber(projectionSub),
 	)
 
 	// 10. Initialize Workers
@@ -243,7 +269,7 @@ func main() {
 	defer cancel()
 
 	components := []interface{ Start(context.Context) error }{
-		orchestrator, sched, eventRouter, linkHandler, startWorker, actionWorker, publishWorker,
+		orchestrator, sched, eventRouter, linkHandler, projectionConsumer, startWorker, actionWorker, publishWorker,
 	}
 
 	for _, c := range components {

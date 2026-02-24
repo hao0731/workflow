@@ -6,17 +6,14 @@ import (
 	"log/slog"
 
 	cloudevents "github.com/cloudevents/sdk-go/v2"
-)
 
-// Subscriber is the interface for subscribing to events.
-type Subscriber interface {
-	Subscribe(ctx context.Context, handler func(context.Context, cloudevents.Event) error) error
-}
+	"github.com/cheriehsieh/orchestration/internal/eventbus"
+)
 
 // ProjectionConsumer projects events from the event log into MongoDB read models.
 type ProjectionConsumer struct {
 	mongo      EventStore
-	subscriber Subscriber
+	subscriber eventbus.Subscriber
 	logger     *slog.Logger
 }
 
@@ -43,7 +40,7 @@ func WithProjectionLogger(logger *slog.Logger) ProjectionOption {
 }
 
 // WithSubscriber sets the event subscriber.
-func WithSubscriber(sub Subscriber) ProjectionOption {
+func WithSubscriber(sub eventbus.Subscriber) ProjectionOption {
 	return func(p *ProjectionConsumer) {
 		p.subscriber = sub
 	}
