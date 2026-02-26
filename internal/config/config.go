@@ -18,6 +18,8 @@ type Config struct {
 	// MongoDB
 	MongoURI      string
 	MongoDatabase string
+	MongoUsername string
+	MongoPassword string
 
 	// NATS
 	NATSURL     string
@@ -42,6 +44,8 @@ func Load() *Config {
 		// MongoDB
 		MongoURI:      getEnv("MONGO_URI", "mongodb://localhost:27017"),
 		MongoDatabase: getEnv("MONGO_DATABASE", "orchestration"),
+		MongoUsername: getEnv("MONGO_USERNAME", ""),
+		MongoPassword: getEnv("MONGO_PASSWORD", ""),
 
 		// NATS
 		NATSURL:     getEnv("NATS_URL", "nats://localhost:4222"),

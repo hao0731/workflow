@@ -13,7 +13,6 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
 
 	"github.com/cheriehsieh/orchestration/internal/config"
 	"github.com/cheriehsieh/orchestration/internal/engine"
@@ -230,7 +229,13 @@ func main() {
 	)
 
 	// 3. Connect to MongoDB
-	client, err := mongo.Connect(context.Background(), options.Client().ApplyURI(cfg.MongoURI))
+	mongoOpts, err := cfg.MongoClientOptions()
+	if err != nil {
+		logger.Error("invalid MongoDB configuration", slog.Any("error", err))
+		os.Exit(1)
+	}
+
+	client, err := mongo.Connect(context.Background(), mongoOpts)
 	if err != nil {
 		logger.Error("failed to connect to MongoDB", slog.Any("error", err))
 		os.Exit(1)
