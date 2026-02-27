@@ -56,8 +56,10 @@ func (p *ProjectionConsumer) Start(ctx context.Context) error {
 
 // HandleEvent processes a single event and projects it into MongoDB.
 // This is the callback to be used with an eventbus.Subscriber.
+// Idempotency: MongoDB uses the event ID as _id, so duplicate deliveries
+// from NATS retries are safely handled via upsert semantics.
 func (p *ProjectionConsumer) HandleEvent(ctx context.Context, event cloudevents.Event) error {
-	p.logger.InfoContext(ctx, "projecting event",
+	p.logger.DebugContext(ctx, "projecting event",
 		slog.String("id", event.ID()),
 		slog.String("type", event.Type()),
 		slog.String("subject", event.Subject()),

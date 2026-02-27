@@ -34,7 +34,9 @@ type Config struct {
 	CassandraPort     int
 
 	// Migration
-	MigrationPhase string // "shadow", "read_switch", "cleanup"
+	// TODO: MigrationPhase is not yet used by HybridEventStore.
+	// Planned phases: "shadow" (dual-write), "read_switch" (read from Cassandra), "cleanup" (drop MongoDB events).
+	MigrationPhase string
 }
 
 // Load reads configuration from environment variables.

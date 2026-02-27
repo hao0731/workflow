@@ -57,11 +57,22 @@ func main() {
 	cassandraCluster := gocql.NewCluster(strings.Split(cfg.CassandraHosts, ",")...)
 	cassandraCluster.Port = cfg.CassandraPort
 	cassandraCluster.Keyspace = cfg.CassandraKeyspace
-	cassandraCluster.Consistency = gocql.Quorum
+	cassandraCluster.Consistency = gocql.LocalQuorum
 
-	cassandraSession, err := cassandraCluster.CreateSession()
+	var cassandraSession *gocql.Session
+	for attempt := 1; attempt <= 5; attempt++ {
+		cassandraSession, err = cassandraCluster.CreateSession()
+		if err == nil {
+			break
+		}
+		logger.Warn("failed to connect to Cassandra, retrying...",
+			slog.Int("attempt", attempt),
+			slog.Any("error", err),
+		)
+		time.Sleep(time.Duration(attempt) * 2 * time.Second)
+	}
 	if err != nil {
-		logger.Error("failed to connect to Cassandra", slog.Any("error", err))
+		logger.Error("failed to connect to Cassandra after retries", slog.Any("error", err))
 		os.Exit(1)
 	}
 	defer cassandraSession.Close()

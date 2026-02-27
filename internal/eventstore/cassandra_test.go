@@ -17,7 +17,7 @@ func setupTestCassandra(t *testing.T) (*gocql.Session, func()) {
 	cluster := gocql.NewCluster("localhost")
 	cluster.Port = 9042
 	cluster.Keyspace = "orchestration"
-	cluster.Consistency = gocql.Quorum
+	cluster.Consistency = gocql.LocalQuorum
 
 	session, err := cluster.CreateSession()
 	if err != nil {
@@ -25,7 +25,7 @@ func setupTestCassandra(t *testing.T) (*gocql.Session, func()) {
 	}
 
 	// Clean up before test
-	_ = session.Query("TRUNCATE orchestration.events").Exec()
+	_ = session.Query("TRUNCATE events").Exec()
 
 	return session, func() {
 		session.Close()
@@ -54,7 +54,7 @@ func TestCassandraEventStore_Append(t *testing.T) {
 	// Verify data was written by querying directly
 	var id, typ, source, subject string
 	err = session.Query(
-		"SELECT id, type, source, subject FROM orchestration.events WHERE subject = ? LIMIT 1",
+		"SELECT id, type, source, subject FROM events WHERE subject = ? LIMIT 1",
 		"exec-123",
 	).Scan(&id, &typ, &source, &subject)
 	require.NoError(t, err)

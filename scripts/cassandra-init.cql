@@ -12,8 +12,8 @@ CREATE TABLE IF NOT EXISTS orchestration.events (
     datacontenttype TEXT,
     data            TEXT,
     extensions      MAP<TEXT, TEXT>,
-    PRIMARY KEY (subject, time)
-) WITH CLUSTERING ORDER BY (time ASC)
+    PRIMARY KEY (subject, time, id)
+) WITH CLUSTERING ORDER BY (time ASC, id ASC)
   AND compaction = {'class': 'TimeWindowCompactionStrategy',
                     'compaction_window_size': 1,
                     'compaction_window_unit': 'DAYS'};

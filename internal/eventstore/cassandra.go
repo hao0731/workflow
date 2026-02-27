@@ -37,7 +37,7 @@ func (s *CassandraEventStore) Append(ctx context.Context, event cloudevents.Even
 	}
 
 	return s.session.Query(
-		`INSERT INTO orchestration.events
+		`INSERT INTO events
 		 (subject, time, id, type, source, datacontenttype, data, extensions)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		stored.Subject,
@@ -68,12 +68,12 @@ func (s *CassandraEventStore) queryEvents(ctx context.Context, subject string, s
 	var query *gocql.Query
 	if since != nil {
 		query = s.session.Query(
-			"SELECT subject, time, id, type, source, datacontenttype, data, extensions FROM orchestration.events WHERE subject = ? AND time > ?",
+			"SELECT subject, time, id, type, source, datacontenttype, data, extensions FROM events WHERE subject = ? AND time > ?",
 			subject, *since,
 		)
 	} else {
 		query = s.session.Query(
-			"SELECT subject, time, id, type, source, datacontenttype, data, extensions FROM orchestration.events WHERE subject = ?",
+			"SELECT subject, time, id, type, source, datacontenttype, data, extensions FROM events WHERE subject = ?",
 			subject,
 		)
 	}
@@ -93,6 +93,7 @@ func (s *CassandraEventStore) queryEvents(ctx context.Context, subject string, s
 		event.SetType(typ)
 		event.SetSubject(sub)
 		event.SetTime(ts)
+		event.SetDataContentType(dataContentType)
 
 		var data map[string]any
 		if err := json.Unmarshal([]byte(dataJSON), &data); err == nil {
