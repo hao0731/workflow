@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
@@ -39,7 +40,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	client, err := mongo.Connect(context.Background(), mongoOpts)
+	mongoCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	client, err := mongo.Connect(mongoCtx, mongoOpts)
 	if err != nil {
 		logger.Error("failed to connect to MongoDB", slog.Any("error", err))
 		os.Exit(1)
