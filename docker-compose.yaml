@@ -8,23 +8,23 @@ services:
       - mongodb_data:/data/db
     environment:
       MONGO_INITDB_DATABASE: orchestration
+    networks:
+      - orchestration
 
   nats:
     image: nats:2.10-alpine
     container_name: orchestration-nats
     ports:
-      - "4222:4222"   # Client connections
       - "8222:8222"   # HTTP monitoring
-      - "9222:9222"   # WebSocket
     command: ["--jetstream", "--store_dir=/data", "-m", "8222"]
     volumes:
       - nats_data:/data
+    networks:
+      - orchestration
 
   cassandra:
     image: cassandra:4.1
     container_name: orchestration-cassandra
-    ports:
-      - "9042:9042"
     volumes:
       - cassandra_data:/var/lib/cassandra
     environment:
@@ -36,6 +36,12 @@ services:
       interval: 15s
       timeout: 10s
       retries: 10
+    networks:
+      - orchestration
+
+networks:
+  orchestration:
+    name: orchestration
 
 volumes:
   mongodb_data:

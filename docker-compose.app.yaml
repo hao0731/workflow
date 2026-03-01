@@ -1,0 +1,54 @@
+name: orchestration-app
+
+services:
+  engine:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: orchestration-engine
+    entrypoint: ["./engine"]
+    environment:
+      MONGO_URI: mongodb://orchestration-mongodb:27017
+      MONGO_DATABASE: orchestration
+      NATS_URL: nats://orchestration-nats:4222
+      CASSANDRA_HOSTS: orchestration-cassandra
+      CASSANDRA_KEYSPACE: orchestration
+      CASSANDRA_PORT: 9042
+      MIGRATION_PHASE: shadow
+    networks:
+      - orchestration
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: orchestration-api
+    entrypoint: ["./api"]
+    ports:
+      - "8081:8081"
+    environment:
+      MONGO_URI: mongodb://orchestration-mongodb:27017
+      MONGO_DATABASE: orchestration
+      API_PORT: 8081
+    networks:
+      - orchestration
+
+  workflow-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: orchestration-workflow-api
+    entrypoint: ["./workflow-api"]
+    ports:
+      - "8083:8083"
+    environment:
+      MONGO_URI: mongodb://orchestration-mongodb:27017
+      MONGO_DATABASE: orchestration
+      NATS_URL: nats://orchestration-nats:4222
+      WORKFLOW_API_PORT: 8083
+    networks:
+      - orchestration
+
+networks:
+  orchestration:
+    external: true
