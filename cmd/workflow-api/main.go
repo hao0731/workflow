@@ -13,7 +13,6 @@ import (
 	"github.com/labstack/echo/v4/middleware"
 	"github.com/nats-io/nats.go"
 	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
 
 	"github.com/cheriehsieh/orchestration/internal/api"
 	"github.com/cheriehsieh/orchestration/internal/config"
@@ -35,13 +34,14 @@ func main() {
 	)
 
 	// 3. Connect to MongoDB
-	mongoURI := os.Getenv("MONGO_URI")
-	if mongoURI == "" {
-		mongoURI = "mongodb://localhost:27017"
+	mongoOpts, err := cfg.MongoClientOptions()
+	if err != nil {
+		logger.Error("invalid MongoDB configuration", slog.Any("error", err))
+		os.Exit(1)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	mongoClient, err := mongo.Connect(ctx, options.Client().ApplyURI(mongoURI))
+	mongoClient, err := mongo.Connect(ctx, mongoOpts)
 	cancel()
 	if err != nil {
 		logger.Error("failed to connect to MongoDB", slog.Any("error", err))
@@ -49,7 +49,7 @@ func main() {
 	}
 	defer mongoClient.Disconnect(context.Background())
 
-	db := mongoClient.Database("orchestration")
+	db := mongoClient.Database(cfg.MongoDatabase)
 	eventStore := eventstore.NewMongoEventStore(db, "events")
 
 	// 4. Initialize workflow store based on config

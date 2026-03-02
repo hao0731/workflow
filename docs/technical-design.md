@@ -498,8 +498,14 @@ To protect sensitive data (PII) even from database admins, we implement the **Da
 | `APP_ENV` | `development` | Environment (development/production) |
 | `PORT` | `8081` | HTTP server port |
 | `MONGO_URI` | `mongodb://localhost:27017` | MongoDB connection string |
+| `MONGO_DATABASE` | `orchestration` | MongoDB database name |
+| `MONGO_USERNAME` | `` | MongoDB username (optional; requires `MONGO_PASSWORD`) |
+| `MONGO_PASSWORD` | `` | MongoDB password (optional; requires `MONGO_USERNAME`) |
 | `NATS_URL` | `nats://localhost:4222` | NATS server URL |
 | `JWT_SECRET` | - | JWT signing secret |
+
+> [!IMPORTANT]
+> Startup fails fast if only one of `MONGO_USERNAME` or `MONGO_PASSWORD` is set.
 
 ---
 
@@ -1013,4 +1019,3 @@ graph LR
 3.  **Retry Policies** - Configurable retry with backoff
 4.  **Workflow UI** - Visual editor and monitoring dashboard
 5.  **Join Operators** - Support for `any` (OR) in addition to current `all` (AND)
-

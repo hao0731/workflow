@@ -7,11 +7,11 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
 	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
 
 	"github.com/cheriehsieh/orchestration/internal/config"
 	"github.com/cheriehsieh/orchestration/internal/dsl"
@@ -34,7 +34,14 @@ func main() {
 	)
 
 	// 3. Connect to MongoDB
-	client, err := mongo.Connect(context.Background(), options.Client().ApplyURI(cfg.MongoURI))
+	mongoOpts, err := cfg.MongoClientOptions()
+	if err != nil {
+		logger.Error("invalid MongoDB configuration", slog.Any("error", err))
+		os.Exit(1)
+	}
+
+	mongoCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	client, err := mongo.Connect(mongoCtx, mongoOpts)
 	if err != nil {
 		logger.Error("failed to connect to MongoDB", slog.Any("error", err))
 		os.Exit(1)
