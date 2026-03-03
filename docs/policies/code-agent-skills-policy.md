@@ -132,6 +132,6 @@ To keep the repo consistent, consider adding CI checks that enforce:
 
 * The team manages skills using **Skills CLI** (`npx skills`)
 * The project commits **`skills-lock.json`** as the shared lockfile
-* New developers run **`npx skills experimental_install`** to restore skills ([GitHub][1])
+* New developers run **`npx skills experimental_install`** to restore skills
 * Skills are installed into **`.agents/skills`**
 * If your code agent requires a different directory (e.g., Claude Code), you must **symlink or copy** from `.agents/skills`
