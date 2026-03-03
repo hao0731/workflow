@@ -14,7 +14,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/cheriehsieh/orchestration/internal/engine"
-	"github.com/cheriehsieh/orchestration/internal/eventstore"
 )
 
 // captureEventStore captures appended events for inspection.
@@ -28,10 +27,6 @@ func (s *captureEventStore) Append(_ context.Context, event cloudevents.Event) e
 }
 
 func (s *captureEventStore) GetBySubject(_ context.Context, _ string) ([]cloudevents.Event, error) {
-	return nil, nil
-}
-
-func (s *captureEventStore) GetExecutionsByWorkflow(_ context.Context, _ string) ([]eventstore.ExecutionSummary, error) {
 	return nil, nil
 }
 

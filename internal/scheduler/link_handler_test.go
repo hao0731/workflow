@@ -25,27 +25,45 @@ func newMockExecutionStore() *mockExecutionStore {
 	}
 }
 
-func (m *mockExecutionStore) Create(ctx context.Context, exec *eventstore.Execution) error {
+func (m *mockExecutionStore) Create(_ context.Context, exec *eventstore.Execution) error {
 	m.executions[exec.ID] = exec
 	return nil
 }
 
-func (m *mockExecutionStore) GetByID(ctx context.Context, id string) (*eventstore.Execution, error) {
+func (m *mockExecutionStore) GetByID(_ context.Context, id string) (*eventstore.Execution, error) {
 	return m.executions[id], nil
 }
 
-func (m *mockExecutionStore) GetChildren(ctx context.Context, parentID string) ([]*eventstore.Execution, error) {
+func (m *mockExecutionStore) GetByWorkflowID(_ context.Context, workflowID string) ([]*eventstore.Execution, error) {
+	var result []*eventstore.Execution
+	for _, exec := range m.executions {
+		if exec.WorkflowID == workflowID {
+			result = append(result, exec)
+		}
+	}
+	return result, nil
+}
+
+func (m *mockExecutionStore) GetChildren(_ context.Context, _ string) ([]*eventstore.Execution, error) {
 	return nil, nil
 }
 
-func (m *mockExecutionStore) AddChildExecution(ctx context.Context, parentID, childID string) error {
+func (m *mockExecutionStore) AddChildExecution(_ context.Context, parentID, childID string) error {
 	m.children[parentID] = append(m.children[parentID], childID)
 	return nil
 }
 
-func (m *mockExecutionStore) UpdateStatus(ctx context.Context, id, status string) error {
+func (m *mockExecutionStore) UpdateStatus(_ context.Context, id, status string) error {
 	if exec, ok := m.executions[id]; ok {
 		exec.Status = status
+	}
+	return nil
+}
+
+func (m *mockExecutionStore) UpdateStatusWithTime(_ context.Context, id, status string, completedAt time.Time) error {
+	if exec, ok := m.executions[id]; ok {
+		exec.Status = status
+		exec.CompletedAt = &completedAt
 	}
 	return nil
 }
@@ -111,4 +129,90 @@ func TestExecutionLinkHandler_HandleNoParent(t *testing.T) {
 
 	// Verify no parent update happened
 	assert.Empty(t, store.children)
+}
+
+func TestExecutionLinkHandler_HandleCompleted(t *testing.T) {
+	store := newMockExecutionStore()
+	handler := NewExecutionLinkHandler(store)
+
+	startTime := time.Now().Add(-5 * time.Minute)
+	completedTime := time.Now()
+
+	// Pre-create a running execution
+	store.executions["exec-100"] = &eventstore.Execution{
+		ID:         "exec-100",
+		WorkflowID: "test-wf",
+		Status:     eventstore.StatusRunning,
+		StartedAt:  startTime,
+	}
+
+	// Create ExecutionCompleted event
+	event := cloudevents.NewEvent()
+	event.SetID("evt-3")
+	event.SetType(engine.ExecutionCompleted)
+	event.SetSubject("exec-100")
+	event.SetSource(engine.EventSource)
+	event.SetTime(completedTime)
+
+	err := handler.Handle(context.Background(), event)
+	require.NoError(t, err)
+
+	// Verify status was updated
+	exec := store.executions["exec-100"]
+	require.NotNil(t, exec)
+	assert.Equal(t, eventstore.StatusCompleted, exec.Status)
+	require.NotNil(t, exec.CompletedAt)
+	assert.Equal(t, completedTime.Unix(), exec.CompletedAt.Unix())
+}
+
+func TestExecutionLinkHandler_HandleFailed(t *testing.T) {
+	store := newMockExecutionStore()
+	handler := NewExecutionLinkHandler(store)
+
+	startTime := time.Now().Add(-3 * time.Minute)
+	failedTime := time.Now()
+
+	// Pre-create a running execution
+	store.executions["exec-200"] = &eventstore.Execution{
+		ID:         "exec-200",
+		WorkflowID: "failing-wf",
+		Status:     eventstore.StatusRunning,
+		StartedAt:  startTime,
+	}
+
+	// Create ExecutionFailed event
+	event := cloudevents.NewEvent()
+	event.SetID("evt-4")
+	event.SetType(engine.ExecutionFailed)
+	event.SetSubject("exec-200")
+	event.SetSource(engine.EventSource)
+	event.SetTime(failedTime)
+
+	err := handler.Handle(context.Background(), event)
+	require.NoError(t, err)
+
+	// Verify status was updated
+	exec := store.executions["exec-200"]
+	require.NotNil(t, exec)
+	assert.Equal(t, eventstore.StatusFailed, exec.Status)
+	require.NotNil(t, exec.CompletedAt)
+	assert.Equal(t, failedTime.Unix(), exec.CompletedAt.Unix())
+}
+
+func TestExecutionLinkHandler_IgnoresUnrelatedEvents(t *testing.T) {
+	store := newMockExecutionStore()
+	handler := NewExecutionLinkHandler(store)
+
+	// Create a node-level event (should be ignored)
+	event := cloudevents.NewEvent()
+	event.SetID("evt-5")
+	event.SetType(engine.NodeExecutionCompleted)
+	event.SetSubject("exec-300")
+	event.SetSource(engine.EventSource)
+
+	err := handler.Handle(context.Background(), event)
+	require.NoError(t, err)
+
+	// Verify nothing was created
+	assert.Empty(t, store.executions)
 }

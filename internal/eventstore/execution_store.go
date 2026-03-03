@@ -2,18 +2,22 @@ package eventstore
 
 import (
 	"context"
+	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 // ExecutionStore manages execution state with linking.
 type ExecutionStore interface {
 	Create(ctx context.Context, exec *Execution) error
 	GetByID(ctx context.Context, id string) (*Execution, error)
+	GetByWorkflowID(ctx context.Context, workflowID string) ([]*Execution, error)
 	GetChildren(ctx context.Context, parentID string) ([]*Execution, error)
 	AddChildExecution(ctx context.Context, parentID, childID string) error
 	UpdateStatus(ctx context.Context, id, status string) error
+	UpdateStatusWithTime(ctx context.Context, id, status string, completedAt time.Time) error
 }
 
 // MongoExecutionStore implements ExecutionStore using MongoDB.
@@ -42,6 +46,21 @@ func (s *MongoExecutionStore) GetByID(ctx context.Context, id string) (*Executio
 	return &exec, nil
 }
 
+func (s *MongoExecutionStore) GetByWorkflowID(ctx context.Context, workflowID string) ([]*Execution, error) {
+	opts := options.Find().SetSort(bson.D{{Key: "started_at", Value: -1}})
+	cursor, err := s.collection.Find(ctx, bson.M{"workflow_id": workflowID}, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = cursor.Close(ctx) }()
+
+	var executions []*Execution
+	if err := cursor.All(ctx, &executions); err != nil {
+		return nil, err
+	}
+	return executions, nil
+}
+
 func (s *MongoExecutionStore) GetChildren(ctx context.Context, parentID string) ([]*Execution, error) {
 	cursor, err := s.collection.Find(ctx, bson.M{"parent_execution_id": parentID})
 	if err != nil {
@@ -68,6 +87,14 @@ func (s *MongoExecutionStore) UpdateStatus(ctx context.Context, id, status strin
 	_, err := s.collection.UpdateOne(ctx,
 		bson.M{"_id": id},
 		bson.M{"$set": bson.M{"status": status}},
+	)
+	return err
+}
+
+func (s *MongoExecutionStore) UpdateStatusWithTime(ctx context.Context, id, status string, completedAt time.Time) error {
+	_, err := s.collection.UpdateOne(ctx,
+		bson.M{"_id": id},
+		bson.M{"$set": bson.M{"status": status, "completed_at": completedAt}},
 	)
 	return err
 }

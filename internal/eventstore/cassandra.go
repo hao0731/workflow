@@ -59,10 +59,6 @@ func (s *CassandraEventStore) GetEventsByExecution(ctx context.Context, executio
 	return s.queryEvents(ctx, executionID, since)
 }
 
-func (s *CassandraEventStore) GetExecutionsByWorkflow(_ context.Context, _ string) ([]ExecutionSummary, error) {
-	return nil, fmt.Errorf("GetExecutionsByWorkflow not supported by CassandraEventStore: use HybridEventStore")
-}
-
 // queryEvents retrieves events by partition key (subject), optionally filtered by time.
 func (s *CassandraEventStore) queryEvents(ctx context.Context, subject string, since *time.Time) ([]cloudevents.Event, error) {
 	var query *gocql.Query

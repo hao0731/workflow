@@ -175,10 +175,8 @@ func main() {
 
 	workflowRepo := dsl.NewMongoWorkflowStore(db)
 
-	// Hybrid Event Store: Cassandra for writes, MongoDB for read models
-	cassandraStore := eventstore.NewCassandraEventStore(cassandraSession)
-	mongoReadModel := eventstore.NewMongoEventStore(db, "events")
-	eventStoreImpl := eventstore.NewHybridEventStore(cassandraStore, mongoReadModel)
+	// Cassandra Event Store: sole source for event persistence
+	eventStoreImpl := eventstore.NewCassandraEventStore(cassandraSession)
 
 	// 6b. Initialize Execution Store for linking
 	executionStore := eventstore.NewMongoExecutionStore(db, "executions")
@@ -222,14 +220,6 @@ func main() {
 		executionStore,
 		scheduler.WithLinkHandlerLogger(logger),
 		scheduler.WithLinkHandlerSubscriber(linkHandlerSub),
-	)
-
-	// 9c. Initialize Projection Consumer (Cassandra → MongoDB)
-	projectionSub := eventbus.NewNATSEventBus(js, "workflow.events.>", "projection-consumer", eventbus.WithLogger(logger))
-	projectionConsumer := eventstore.NewProjectionConsumer(
-		mongoReadModel,
-		eventstore.WithProjectionLogger(logger),
-		eventstore.WithSubscriber(projectionSub),
 	)
 
 	// 10. Initialize Workers
@@ -280,7 +270,7 @@ func main() {
 	defer cancel()
 
 	components := []interface{ Start(context.Context) error }{
-		orchestrator, sched, eventRouter, linkHandler, projectionConsumer, startWorker, actionWorker, publishWorker,
+		orchestrator, sched, eventRouter, linkHandler, startWorker, actionWorker, publishWorker,
 	}
 
 	for _, c := range components {

@@ -2,12 +2,13 @@ package eventstore
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	cloudevents "github.com/cloudevents/sdk-go/v2"
 )
 
-// StoredEvent is the MongoDB representation of a CloudEvent.
+// StoredEvent is the persistence representation of a CloudEvent.
 type StoredEvent struct {
 	ID              string         `bson:"_id"`
 	Source          string         `bson:"source"`
@@ -19,19 +20,10 @@ type StoredEvent struct {
 	Extensions      map[string]any `bson:"extensions,omitempty"`
 }
 
-// ExecutionSummary is a lightweight representation of an execution for API responses.
-type ExecutionSummary struct {
-	ID         string    `json:"id"`
-	WorkflowID string    `json:"workflow_id"`
-	Status     string    `json:"status"`
-	StartedAt  time.Time `json:"started_at"`
-}
-
 // EventStore handles persistence of CloudEvents.
 type EventStore interface {
 	Append(ctx context.Context, event cloudevents.Event) error
 	GetBySubject(ctx context.Context, subject string) ([]cloudevents.Event, error)
-	GetExecutionsByWorkflow(ctx context.Context, workflowID string) ([]ExecutionSummary, error)
 	// GetEventsByExecution returns all events for a given execution ID.
 	GetEventsByExecution(ctx context.Context, executionID string, since *time.Time) ([]cloudevents.Event, error)
 }
@@ -73,4 +65,9 @@ func (s StoredEvent) ToCloudEvent() cloudevents.Event {
 	}
 
 	return event
+}
+
+// MarshalData serializes StoredEvent.Data to JSON bytes.
+func (s StoredEvent) MarshalData() ([]byte, error) {
+	return json.Marshal(s.Data)
 }

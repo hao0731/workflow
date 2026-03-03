@@ -14,7 +14,6 @@ services:
       CASSANDRA_HOSTS: orchestration-cassandra
       CASSANDRA_KEYSPACE: orchestration
       CASSANDRA_PORT: 9042
-      MIGRATION_PHASE: shadow
     networks:
       - orchestration
 
@@ -30,6 +29,9 @@ services:
       MONGO_URI: mongodb://orchestration-mongodb:27017
       MONGO_DATABASE: orchestration
       API_PORT: 8081
+      CASSANDRA_HOSTS: orchestration-cassandra
+      CASSANDRA_KEYSPACE: orchestration
+      CASSANDRA_PORT: 9042
     networks:
       - orchestration
 
@@ -46,6 +48,9 @@ services:
       MONGO_DATABASE: orchestration
       NATS_URL: nats://orchestration-nats:4222
       WORKFLOW_API_PORT: 8083
+      CASSANDRA_HOSTS: orchestration-cassandra
+      CASSANDRA_KEYSPACE: orchestration
+      CASSANDRA_PORT: 9042
     networks:
       - orchestration
 

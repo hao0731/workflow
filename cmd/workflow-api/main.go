@@ -7,9 +7,11 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/gocql/gocql"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 	"github.com/nats-io/nats.go"
@@ -51,7 +53,32 @@ func main() {
 	defer func() { _ = mongoClient.Disconnect(context.Background()) }()
 
 	db := mongoClient.Database(cfg.MongoDatabase)
-	eventStore := eventstore.NewMongoEventStore(db, "events")
+
+	// 3b. Connect to Cassandra
+	cassandraCluster := gocql.NewCluster(strings.Split(cfg.CassandraHosts, ",")...)
+	cassandraCluster.Port = cfg.CassandraPort
+	cassandraCluster.Keyspace = cfg.CassandraKeyspace
+	cassandraCluster.Consistency = gocql.LocalQuorum
+
+	var cassandraSession *gocql.Session
+	for attempt := 1; attempt <= 5; attempt++ {
+		cassandraSession, err = cassandraCluster.CreateSession()
+		if err == nil {
+			break
+		}
+		logger.Warn("failed to connect to Cassandra, retrying...",
+			slog.Int("attempt", attempt),
+			slog.Any("error", err),
+		)
+		time.Sleep(time.Duration(attempt) * 2 * time.Second)
+	}
+	if err != nil {
+		logger.Error("failed to connect to Cassandra after retries", slog.Any("error", err))
+		os.Exit(1)
+	}
+	defer cassandraSession.Close()
+
+	eventStore := eventstore.NewCassandraEventStore(cassandraSession)
 
 	// 4. Initialize workflow store based on config
 	store, err := dsl.NewWorkflowStoreFromConfig(cfg.WorkflowStore, db)
@@ -136,10 +163,9 @@ func main() {
 	// Event Marketplace registry (shared between workflow and marketplace handlers)
 	eventRegistry := marketplace.NewMongoEventRegistry(db)
 
-	// Workflow routes
+	// Workflow routes (no eventStore — events reach Cassandra through engine)
 	workflowHandler := dslapi.NewWorkflowHandler(registry, logger,
 		dslapi.WithEventBus(executionEventBus),
-		dslapi.WithEventStore(eventStore),
 		dslapi.WithEventRegistry(eventRegistry),
 	)
 	workflowHandler.RegisterRoutes(apiGroup)
