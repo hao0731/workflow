@@ -15,6 +15,7 @@ services:
     image: nats:2.10-alpine
     container_name: orchestration-nats
     ports:
+      - "4222:4222"   # Client connections
       - "8222:8222"   # HTTP monitoring
     command: ["--jetstream", "--store_dir=/data", "-m", "8222"]
     volumes:

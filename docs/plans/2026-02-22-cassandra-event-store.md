@@ -1,10 +1,14 @@
 # Cassandra Event Store Implementation Plan
 
+> **Status: HISTORICAL** — This document reflects the original migration plan. The actual implementation uses `CassandraEventStore` as the sole event store (no `HybridEventStore`, `MongoEventStore`, or `ProjectionConsumer`). MongoDB is used only for read models (`executions`, `workflows`) via `ExecutionStore`. The `GetExecutionsByWorkflow` method was removed from the `EventStore` interface and replaced by `ExecutionStore.GetByWorkflowID`. Refer to the current codebase for the implemented architecture.
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Migrate event history storage from MongoDB-only to a hybrid Cassandra (writes) + MongoDB (read models) architecture.
+**Original Goal:** Migrate event history storage from MongoDB-only to a hybrid Cassandra (writes) + MongoDB (read models) architecture.
 
-**Architecture:** CQRS split — `CassandraEventStore` handles append + partition-key reads, `MongoEventStore` handles complex aggregated reads, and `HybridEventStore` composes both behind the existing `EventStore` interface. A `ProjectionConsumer` subscribes to NATS events to keep MongoDB read models in sync.
+**Original Architecture:** CQRS split — `CassandraEventStore` handles append + partition-key reads, `MongoEventStore` handles complex aggregated reads, and `HybridEventStore` composes both behind the existing `EventStore` interface. A `ProjectionConsumer` subscribes to NATS events to keep MongoDB read models in sync.
+
+**Current Architecture:** `CassandraEventStore` is the sole event store. MongoDB is used only for read models via `ExecutionStore` (with `GetByWorkflowID` and `UpdateStatusWithTime`). There is no `HybridEventStore`, `MongoEventStore`, or `ProjectionConsumer`.
 
 **Tech Stack:** Go 1.25, gocql, MongoDB, NATS JetStream, Docker Compose, testify
 

@@ -31,11 +31,11 @@ This starts three services on a shared Docker network (`orchestration`):
 | Service   | Image             | Purpose                     | Host Port |
 |-----------|-------------------|-----------------------------|-----------|
 | MongoDB   | mongo:7.0         | Read models, workflow store | 27018     |
-| NATS      | nats:2.10-alpine  | Event streaming (JetStream) | 8222 (monitoring only) |
+| NATS      | nats:2.10-alpine  | Event streaming (JetStream) | 4222 (client), 8222 (monitoring) |
 | Cassandra | cassandra:4.1     | Event write store           | -         |
 
 - **MongoDB** is exposed on `localhost:27018` for tools like [MongoDB Compass](https://www.mongodb.com/products/compass).
-- **NATS** monitoring dashboard is available at `http://localhost:8222`.
+- **NATS** client connections on `localhost:4222`, monitoring dashboard at `http://localhost:8222`.
 - **Cassandra** is only accessible within the Docker network.
 
 ### 2. Wait for Cassandra to be Ready

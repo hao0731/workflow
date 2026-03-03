@@ -72,12 +72,16 @@ func (r *MongoRepository) GetByID(ctx context.Context, id string) (*NodeRegistra
 	return &reg, err
 }
 
-func (r *MongoRepository) List(ctx context.Context) ([]NodeRegistration, error) {
+func (r *MongoRepository) List(ctx context.Context) (_ []NodeRegistration, err error) {
 	cursor, err := r.collection.Find(ctx, bson.M{"enabled": true})
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = cursor.Close(ctx) }()
+	defer func() {
+		if closeErr := cursor.Close(ctx); closeErr != nil && err == nil {
+			err = closeErr
+		}
+	}()
 
 	var registrations []NodeRegistration
 	if err := cursor.All(ctx, &registrations); err != nil {

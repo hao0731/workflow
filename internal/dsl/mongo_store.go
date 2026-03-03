@@ -104,13 +104,17 @@ func (s *MongoWorkflowStore) GetSource(ctx context.Context, id string) ([]byte, 
 	return doc.Source, nil
 }
 
-func (s *MongoWorkflowStore) List(ctx context.Context) ([]string, error) {
+func (s *MongoWorkflowStore) List(ctx context.Context) (_ []string, err error) {
 	opts := options.Find().SetProjection(bson.M{"_id": 1})
 	cursor, err := s.collection.Find(ctx, bson.M{"deleted_at": bson.M{"$exists": false}}, opts)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = cursor.Close(ctx) }()
+	defer func() {
+		if closeErr := cursor.Close(ctx); closeErr != nil && err == nil {
+			err = closeErr
+		}
+	}()
 
 	var results []struct {
 		ID string `bson:"_id"`
@@ -142,14 +146,18 @@ func (s *MongoWorkflowStore) Delete(ctx context.Context, id string) error {
 }
 
 // FindByEventTrigger finds workflows that are triggered by the given event.
-func (s *MongoWorkflowStore) FindByEventTrigger(ctx context.Context, eventName, domain string) ([]*engine.Workflow, error) {
+func (s *MongoWorkflowStore) FindByEventTrigger(ctx context.Context, eventName, domain string) (_ []*engine.Workflow, err error) {
 	// Query all non-deleted workflows and filter in-memory
 	// For production, consider adding indexes on nodes.trigger.criteria
 	cursor, err := s.collection.Find(ctx, bson.M{"deleted_at": bson.M{"$exists": false}})
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = cursor.Close(ctx) }()
+	defer func() {
+		if closeErr := cursor.Close(ctx); closeErr != nil && err == nil {
+			err = closeErr
+		}
+	}()
 
 	var matching []*engine.Workflow
 	for cursor.Next(ctx) {

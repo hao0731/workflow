@@ -131,72 +131,49 @@ func TestExecutionLinkHandler_HandleNoParent(t *testing.T) {
 	assert.Empty(t, store.children)
 }
 
-func TestExecutionLinkHandler_HandleCompleted(t *testing.T) {
-	store := newMockExecutionStore()
-	handler := NewExecutionLinkHandler(store)
-
-	startTime := time.Now().Add(-5 * time.Minute)
-	completedTime := time.Now()
-
-	// Pre-create a running execution
-	store.executions["exec-100"] = &eventstore.Execution{
-		ID:         "exec-100",
-		WorkflowID: "test-wf",
-		Status:     eventstore.StatusRunning,
-		StartedAt:  startTime,
+func TestExecutionLinkHandler_HandleTerminalEvents(t *testing.T) {
+	tests := []struct {
+		name           string
+		executionID    string
+		workflowID     string
+		eventType      string
+		expectedStatus string
+	}{
+		{name: "completed", executionID: "exec-100", workflowID: "test-wf", eventType: engine.ExecutionCompleted, expectedStatus: eventstore.StatusCompleted},
+		{name: "failed", executionID: "exec-200", workflowID: "failing-wf", eventType: engine.ExecutionFailed, expectedStatus: eventstore.StatusFailed},
 	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newMockExecutionStore()
+			handler := NewExecutionLinkHandler(store)
 
-	// Create ExecutionCompleted event
-	event := cloudevents.NewEvent()
-	event.SetID("evt-3")
-	event.SetType(engine.ExecutionCompleted)
-	event.SetSubject("exec-100")
-	event.SetSource(engine.EventSource)
-	event.SetTime(completedTime)
+			startTime := time.Now().Add(-5 * time.Minute)
+			eventTime := time.Now()
 
-	err := handler.Handle(context.Background(), event)
-	require.NoError(t, err)
+			store.executions[tc.executionID] = &eventstore.Execution{
+				ID:         tc.executionID,
+				WorkflowID: tc.workflowID,
+				Status:     eventstore.StatusRunning,
+				StartedAt:  startTime,
+			}
 
-	// Verify status was updated
-	exec := store.executions["exec-100"]
-	require.NotNil(t, exec)
-	assert.Equal(t, eventstore.StatusCompleted, exec.Status)
-	require.NotNil(t, exec.CompletedAt)
-	assert.Equal(t, completedTime.Unix(), exec.CompletedAt.Unix())
-}
+			event := cloudevents.NewEvent()
+			event.SetID("evt-terminal")
+			event.SetType(tc.eventType)
+			event.SetSubject(tc.executionID)
+			event.SetSource(engine.EventSource)
+			event.SetTime(eventTime)
 
-func TestExecutionLinkHandler_HandleFailed(t *testing.T) {
-	store := newMockExecutionStore()
-	handler := NewExecutionLinkHandler(store)
+			err := handler.Handle(context.Background(), event)
+			require.NoError(t, err)
 
-	startTime := time.Now().Add(-3 * time.Minute)
-	failedTime := time.Now()
-
-	// Pre-create a running execution
-	store.executions["exec-200"] = &eventstore.Execution{
-		ID:         "exec-200",
-		WorkflowID: "failing-wf",
-		Status:     eventstore.StatusRunning,
-		StartedAt:  startTime,
+			exec := store.executions[tc.executionID]
+			require.NotNil(t, exec)
+			assert.Equal(t, tc.expectedStatus, exec.Status)
+			require.NotNil(t, exec.CompletedAt)
+			assert.Equal(t, eventTime.Unix(), exec.CompletedAt.Unix())
+		})
 	}
-
-	// Create ExecutionFailed event
-	event := cloudevents.NewEvent()
-	event.SetID("evt-4")
-	event.SetType(engine.ExecutionFailed)
-	event.SetSubject("exec-200")
-	event.SetSource(engine.EventSource)
-	event.SetTime(failedTime)
-
-	err := handler.Handle(context.Background(), event)
-	require.NoError(t, err)
-
-	// Verify status was updated
-	exec := store.executions["exec-200"]
-	require.NotNil(t, exec)
-	assert.Equal(t, eventstore.StatusFailed, exec.Status)
-	require.NotNil(t, exec.CompletedAt)
-	assert.Equal(t, failedTime.Unix(), exec.CompletedAt.Unix())
 }
 
 func TestExecutionLinkHandler_IgnoresUnrelatedEvents(t *testing.T) {

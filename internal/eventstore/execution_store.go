@@ -46,13 +46,17 @@ func (s *MongoExecutionStore) GetByID(ctx context.Context, id string) (*Executio
 	return &exec, nil
 }
 
-func (s *MongoExecutionStore) GetByWorkflowID(ctx context.Context, workflowID string) ([]*Execution, error) {
+func (s *MongoExecutionStore) GetByWorkflowID(ctx context.Context, workflowID string) (_ []*Execution, err error) {
 	opts := options.Find().SetSort(bson.D{{Key: "started_at", Value: -1}})
 	cursor, err := s.collection.Find(ctx, bson.M{"workflow_id": workflowID}, opts)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = cursor.Close(ctx) }()
+	defer func() {
+		if closeErr := cursor.Close(ctx); closeErr != nil && err == nil {
+			err = closeErr
+		}
+	}()
 
 	var executions []*Execution
 	if err := cursor.All(ctx, &executions); err != nil {
@@ -61,12 +65,16 @@ func (s *MongoExecutionStore) GetByWorkflowID(ctx context.Context, workflowID st
 	return executions, nil
 }
 
-func (s *MongoExecutionStore) GetChildren(ctx context.Context, parentID string) ([]*Execution, error) {
+func (s *MongoExecutionStore) GetChildren(ctx context.Context, parentID string) (_ []*Execution, err error) {
 	cursor, err := s.collection.Find(ctx, bson.M{"parent_execution_id": parentID})
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = cursor.Close(ctx) }()
+	defer func() {
+		if closeErr := cursor.Close(ctx); closeErr != nil && err == nil {
+			err = closeErr
+		}
+	}()
 
 	var children []*Execution
 	if err := cursor.All(ctx, &children); err != nil {
@@ -76,27 +84,45 @@ func (s *MongoExecutionStore) GetChildren(ctx context.Context, parentID string) 
 }
 
 func (s *MongoExecutionStore) AddChildExecution(ctx context.Context, parentID, childID string) error {
-	_, err := s.collection.UpdateOne(ctx,
+	result, err := s.collection.UpdateOne(ctx,
 		bson.M{"_id": parentID},
 		bson.M{"$addToSet": bson.M{"child_execution_ids": childID}},
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	if result.MatchedCount == 0 {
+		return mongo.ErrNoDocuments
+	}
+	return nil
 }
 
 func (s *MongoExecutionStore) UpdateStatus(ctx context.Context, id, status string) error {
-	_, err := s.collection.UpdateOne(ctx,
+	result, err := s.collection.UpdateOne(ctx,
 		bson.M{"_id": id},
 		bson.M{"$set": bson.M{"status": status}},
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	if result.MatchedCount == 0 {
+		return mongo.ErrNoDocuments
+	}
+	return nil
 }
 
 func (s *MongoExecutionStore) UpdateStatusWithTime(ctx context.Context, id, status string, completedAt time.Time) error {
-	_, err := s.collection.UpdateOne(ctx,
+	result, err := s.collection.UpdateOne(ctx,
 		bson.M{"_id": id},
 		bson.M{"$set": bson.M{"status": status, "completed_at": completedAt}},
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	if result.MatchedCount == 0 {
+		return mongo.ErrNoDocuments
+	}
+	return nil
 }
 
 // EnsureIndexes creates required indexes for efficient queries.
