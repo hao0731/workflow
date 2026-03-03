@@ -41,3 +41,8 @@ tmp/
 
 # Worktrees
 .worktrees/
+
+# Code agent skills
+.agents/skills/
+.agent/skills/
+.claude/skills/
