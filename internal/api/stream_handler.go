@@ -43,7 +43,7 @@ func (h *StreamHandler) Stream(c echo.Context) error {
 		h.logger.Error("websocket upgrade failed", slog.Any("error", err))
 		return err
 	}
-	defer ws.Close()
+	defer func() { _ = ws.Close() }()
 
 	h.logger.Info("websocket connected", slog.String("execution_id", execID))
 
@@ -53,7 +53,7 @@ func (h *StreamHandler) Stream(c echo.Context) error {
 	// Handle client disconnect
 	go func() {
 		for {
-			if _, _, err := ws.ReadMessage(); err != nil {
+			if _, _, readErr := ws.ReadMessage(); readErr != nil {
 				cancel()
 				return
 			}

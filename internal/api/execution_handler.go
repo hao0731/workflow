@@ -46,23 +46,49 @@ func (h *ExecutionHandler) RegisterRoutes(g *echo.Group) {
 func (h *ExecutionHandler) ListExecutions(c echo.Context) error {
 	workflowID := c.Param("id")
 
-	summaries, err := h.eventStore.GetExecutionsByWorkflow(c.Request().Context(), workflowID)
+	if h.executionStore == nil {
+		return c.JSON(http.StatusNotImplemented, map[string]string{
+			"error": "execution store not configured",
+		})
+	}
+
+	executions, err := h.executionStore.GetByWorkflowID(c.Request().Context(), workflowID)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 
 	// Return empty array instead of null
-	if summaries == nil {
-		summaries = []eventstore.ExecutionSummary{}
+	if executions == nil {
+		executions = []*eventstore.Execution{}
 	}
 
-	return c.JSON(http.StatusOK, summaries)
+	return c.JSON(http.StatusOK, executions)
 }
 
 // GetExecution handles GET /api/executions/:id
 func (h *ExecutionHandler) GetExecution(c echo.Context) error {
 	execID := c.Param("id")
 
+	// Try execution store first for status/metadata
+	if h.executionStore != nil {
+		exec, err := h.executionStore.GetByID(c.Request().Context(), execID)
+		if err == nil && exec != nil {
+			resp := ExecutionResponse{
+				ID:         exec.ID,
+				WorkflowID: exec.WorkflowID,
+				Status:     exec.Status,
+				StartedAt:  exec.StartedAt,
+			}
+			if exec.CompletedAt != nil {
+				resp.EndedAt = exec.CompletedAt
+				dur := exec.CompletedAt.Sub(exec.StartedAt).Seconds() * 1000
+				resp.DurationMs = &dur
+			}
+			return c.JSON(http.StatusOK, resp)
+		}
+	}
+
+	// Fall back to deriving from events
 	events, err := h.eventStore.GetEventsByExecution(c.Request().Context(), execID, nil)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})

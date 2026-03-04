@@ -142,7 +142,7 @@ func (r *MongoEventRegistry) Get(ctx context.Context, domain, name string) (*Eve
 	return &def, err
 }
 
-func (r *MongoEventRegistry) List(ctx context.Context, domain string) ([]*EventDefinition, error) {
+func (r *MongoEventRegistry) List(ctx context.Context, domain string) (_ []*EventDefinition, err error) {
 	filter := bson.M{}
 	if domain != "" {
 		filter["domain"] = domain
@@ -152,7 +152,11 @@ func (r *MongoEventRegistry) List(ctx context.Context, domain string) ([]*EventD
 	if err != nil {
 		return nil, err
 	}
-	defer cursor.Close(ctx)
+	defer func() {
+		if closeErr := cursor.Close(ctx); closeErr != nil && err == nil {
+			err = closeErr
+		}
+	}()
 
 	var results []*EventDefinition
 	if err := cursor.All(ctx, &results); err != nil {

@@ -8,6 +8,8 @@ services:
       - mongodb_data:/data/db
     environment:
       MONGO_INITDB_DATABASE: orchestration
+    networks:
+      - orchestration
 
   nats:
     image: nats:2.10-alpine
@@ -15,11 +17,34 @@ services:
     ports:
       - "4222:4222"   # Client connections
       - "8222:8222"   # HTTP monitoring
-      - "9222:9222"   # WebSocket
     command: ["--jetstream", "--store_dir=/data", "-m", "8222"]
     volumes:
       - nats_data:/data
+    networks:
+      - orchestration
+
+  cassandra:
+    image: cassandra:4.1
+    container_name: orchestration-cassandra
+    volumes:
+      - cassandra_data:/var/lib/cassandra
+    environment:
+      CASSANDRA_CLUSTER_NAME: orchestration
+      MAX_HEAP_SIZE: 512M
+      HEAP_NEWSIZE: 128M
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'DESCRIBE KEYSPACES' || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+    networks:
+      - orchestration
+
+networks:
+  orchestration:
+    name: orchestration
 
 volumes:
   mongodb_data:
   nats_data:
+  cassandra_data:

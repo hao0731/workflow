@@ -12,13 +12,22 @@ import (
 )
 
 func setupTestMongo(t *testing.T) (*mongo.Database, func()) {
-	ctx := context.Background()
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
 	client, err := mongo.Connect(ctx, options.Client().ApplyURI("mongodb://localhost:27017"))
-	require.NoError(t, err)
+	if err != nil {
+		t.Skipf("MongoDB not available: %v", err)
+	}
+	if err := client.Ping(ctx, nil); err != nil {
+		t.Skipf("MongoDB not available: %v", err)
+	}
+
 	db := client.Database("test_orchestration_" + t.Name())
 	return db, func() {
-		_ = db.Drop(ctx)
-		_ = client.Disconnect(ctx)
+		_ = db.Drop(context.Background())
+		_ = client.Disconnect(context.Background())
 	}
 }
 

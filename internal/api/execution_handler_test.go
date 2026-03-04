@@ -26,21 +26,17 @@ func newMockEventStore() *mockEventStore {
 	}
 }
 
-func (m *mockEventStore) Append(ctx context.Context, event cloudevents.Event) error {
+func (m *mockEventStore) Append(_ context.Context, event cloudevents.Event) error {
 	subject := event.Subject()
 	m.events[subject] = append(m.events[subject], event)
 	return nil
 }
 
-func (m *mockEventStore) GetBySubject(ctx context.Context, subject string) ([]cloudevents.Event, error) {
+func (m *mockEventStore) GetBySubject(_ context.Context, subject string) ([]cloudevents.Event, error) {
 	return m.events[subject], nil
 }
 
-func (m *mockEventStore) GetExecutionsByWorkflow(ctx context.Context, workflowID string) ([]eventstore.ExecutionSummary, error) {
-	return nil, nil
-}
-
-func (m *mockEventStore) GetEventsByExecution(ctx context.Context, executionID string, since *time.Time) ([]cloudevents.Event, error) {
+func (m *mockEventStore) GetEventsByExecution(_ context.Context, executionID string, since *time.Time) ([]cloudevents.Event, error) {
 	events := m.events[executionID]
 	if since == nil {
 		return events, nil
@@ -75,6 +71,16 @@ func (m *mockExecutionStoreForAPI) GetByID(_ context.Context, id string) (*event
 	return m.executions[id], nil
 }
 
+func (m *mockExecutionStoreForAPI) GetByWorkflowID(_ context.Context, workflowID string) ([]*eventstore.Execution, error) {
+	var result []*eventstore.Execution
+	for _, exec := range m.executions {
+		if exec.WorkflowID == workflowID {
+			result = append(result, exec)
+		}
+	}
+	return result, nil
+}
+
 func (m *mockExecutionStoreForAPI) GetChildren(_ context.Context, parentID string) ([]*eventstore.Execution, error) {
 	var children []*eventstore.Execution
 	for _, exec := range m.executions {
@@ -95,6 +101,14 @@ func (m *mockExecutionStoreForAPI) AddChildExecution(_ context.Context, parentID
 func (m *mockExecutionStoreForAPI) UpdateStatus(_ context.Context, id, status string) error {
 	if exec, ok := m.executions[id]; ok {
 		exec.Status = status
+	}
+	return nil
+}
+
+func (m *mockExecutionStoreForAPI) UpdateStatusWithTime(_ context.Context, id, status string, completedAt time.Time) error {
+	if exec, ok := m.executions[id]; ok {
+		exec.Status = status
+		exec.CompletedAt = &completedAt
 	}
 	return nil
 }
@@ -318,10 +332,10 @@ func TestRegisterRoutes(t *testing.T) {
 	routes := e.Routes()
 	var foundGetExecution, foundGetEvents bool
 	for _, r := range routes {
-		if r.Path == "/api/executions/:id" && r.Method == "GET" {
+		if r.Path == "/api/executions/:id" && r.Method == http.MethodGet {
 			foundGetExecution = true
 		}
-		if r.Path == "/api/executions/:id/events" && r.Method == "GET" {
+		if r.Path == "/api/executions/:id/events" && r.Method == http.MethodGet {
 			foundGetEvents = true
 		}
 	}
@@ -398,4 +412,43 @@ func TestGetChildren_NoChildren(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Contains(t, rec.Body.String(), `"children":[]`)
+}
+
+func TestListExecutions_Success(t *testing.T) {
+	store := newMockEventStore()
+	execStore := newMockExecutionStoreForAPI()
+
+	startTime := time.Now().Add(-10 * time.Minute)
+	completedAt := time.Now().Add(-5 * time.Minute)
+
+	execStore.executions["exec-1"] = &eventstore.Execution{
+		ID:          "exec-1",
+		WorkflowID:  "wf-123",
+		Status:      "completed",
+		StartedAt:   startTime,
+		CompletedAt: &completedAt,
+	}
+	execStore.executions["exec-2"] = &eventstore.Execution{
+		ID:         "exec-2",
+		WorkflowID: "wf-123",
+		Status:     "running",
+		StartedAt:  time.Now().Add(-2 * time.Minute),
+	}
+
+	handler := NewExecutionHandler(store, WithExecutionStore(execStore))
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodGet, "/api/workflows/wf-123/executions", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.SetParamNames("id")
+	c.SetParamValues("wf-123")
+
+	err := handler.ListExecutions(c)
+
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), `"exec-1"`)
+	assert.Contains(t, rec.Body.String(), `"exec-2"`)
+	assert.Contains(t, rec.Body.String(), `"wf-123"`)
 }

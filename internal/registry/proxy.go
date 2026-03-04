@@ -3,6 +3,7 @@ package registry
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -129,7 +130,7 @@ func (p *Proxy) subscribeAndForward(ctx context.Context, conn *workerConn) {
 		p.logger.Error("NATS subscribe failed", slog.Any("error", err))
 		return
 	}
-	defer sub.Unsubscribe()
+	defer func() { _ = sub.Unsubscribe() }()
 
 	for {
 		select {
@@ -138,7 +139,7 @@ func (p *Proxy) subscribeAndForward(ctx context.Context, conn *workerConn) {
 		default:
 			msgs, err := sub.Fetch(1, nats.MaxWait(5*time.Second))
 			if err != nil {
-				if err == context.Canceled {
+				if errors.Is(err, context.Canceled) {
 					return
 				}
 				continue
@@ -157,7 +158,7 @@ func (p *Proxy) subscribeAndForward(ctx context.Context, conn *workerConn) {
 					Data: msg.Data,
 				}
 
-				conn.ws.SetWriteDeadline(time.Now().Add(10 * time.Second))
+				_ = conn.ws.SetWriteDeadline(time.Now().Add(10 * time.Second))
 				if err := conn.ws.WriteJSON(proxyMsg); err != nil {
 					p.logger.Warn("websocket write failed", slog.Any("error", err))
 					_ = msg.Nak()
@@ -174,7 +175,7 @@ func (p *Proxy) subscribeAndForward(ctx context.Context, conn *workerConn) {
 func (p *Proxy) readFromWorker(ctx context.Context, conn *workerConn, regID string) {
 	defer func() {
 		conn.cancel()
-		conn.ws.Close()
+		conn.ws.Close() //nolint:errcheck // best-effort cleanup in defer
 		p.mu.Lock()
 		delete(p.connections, regID)
 		p.mu.Unlock()
@@ -212,7 +213,7 @@ func (p *Proxy) Close() {
 
 	for _, conn := range p.connections {
 		conn.cancel()
-		conn.ws.Close()
+		conn.ws.Close() //nolint:errcheck // best-effort cleanup in Close
 	}
 	p.connections = make(map[string]*workerConn)
 }

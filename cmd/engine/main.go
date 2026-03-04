@@ -6,9 +6,11 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/gocql/gocql"
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -50,6 +52,30 @@ func main() {
 		_ = client.Disconnect(context.Background())
 	}()
 	db := client.Database(cfg.MongoDatabase)
+
+	// 3b. Connect to Cassandra
+	cassandraCluster := gocql.NewCluster(strings.Split(cfg.CassandraHosts, ",")...)
+	cassandraCluster.Port = cfg.CassandraPort
+	cassandraCluster.Keyspace = cfg.CassandraKeyspace
+	cassandraCluster.Consistency = gocql.LocalQuorum
+
+	var cassandraSession *gocql.Session
+	for attempt := 1; attempt <= 5; attempt++ {
+		cassandraSession, err = cassandraCluster.CreateSession()
+		if err == nil {
+			break
+		}
+		logger.Warn("failed to connect to Cassandra, retrying...",
+			slog.Int("attempt", attempt),
+			slog.Any("error", err),
+		)
+		time.Sleep(time.Duration(attempt) * 2 * time.Second)
+	}
+	if err != nil {
+		logger.Error("failed to connect to Cassandra after retries", slog.Any("error", err))
+		os.Exit(1)
+	}
+	defer cassandraSession.Close()
 
 	// 4. Connect to NATS
 	nc, err := nats.Connect(cfg.NATSURL)
@@ -149,7 +175,8 @@ func main() {
 
 	workflowRepo := dsl.NewMongoWorkflowStore(db)
 
-	eventStoreImpl := eventstore.NewMongoEventStore(db, "events")
+	// Cassandra Event Store: sole source for event persistence
+	eventStoreImpl := eventstore.NewCassandraEventStore(cassandraSession)
 
 	// 6b. Initialize Execution Store for linking
 	executionStore := eventstore.NewMongoExecutionStore(db, "executions")
@@ -279,7 +306,7 @@ func (r *InMemoryWorkflowRepo) GetByID(_ context.Context, id string) (*engine.Wo
 }
 
 // FindByEventTrigger finds workflows that match the given event trigger.
-func (r *InMemoryWorkflowRepo) FindByEventTrigger(_ context.Context, eventName, domain string) ([]*engine.Workflow, error) {
+func (r *InMemoryWorkflowRepo) FindByEventTrigger(_ context.Context, eventName, domain string) ([]*engine.Workflow, error) { //nolint:unparam // implements WorkflowRepository interface
 	var matches []*engine.Workflow
 	for _, wf := range r.workflows {
 		start := wf.GetStartNode()

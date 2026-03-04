@@ -1,9 +1,8 @@
 # Build stage
-FROM golang:1.23-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 WORKDIR /app
 
-# Install dependencies
 RUN apk add --no-cache git
 
 # Copy go mod files first for better caching
@@ -13,24 +12,28 @@ RUN go mod download
 # Copy source code
 COPY . .
 
-# Build the binary
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /app/workflow-engine ./cmd/engine
+# Build all service binaries
+RUN CGO_ENABLED=0 GOOS=linux go build -buildvcs=false -ldflags="-w -s" -o /app/engine ./cmd/engine
+RUN CGO_ENABLED=0 GOOS=linux go build -buildvcs=false -ldflags="-w -s" -o /app/api ./cmd/api
+RUN CGO_ENABLED=0 GOOS=linux go build -buildvcs=false -ldflags="-w -s" -o /app/workflow-api ./cmd/workflow-api
 
 # Runtime stage
 FROM alpine:3.19
 
 WORKDIR /app
 
-# Install CA certificates for HTTPS calls
 RUN apk --no-cache add ca-certificates
 
-# Copy binary from builder
-COPY --from=builder /app/workflow-engine .
+# Copy binaries from builder
+COPY --from=builder /app/engine .
+COPY --from=builder /app/api .
+COPY --from=builder /app/workflow-api .
 
-# Create non-root user
-RUN adduser -D -g '' appuser
+# Copy scripts for schema init
+COPY scripts/ ./scripts/
+
+# Create non-root user and grant ownership
+RUN adduser -D -g '' appuser && chown -R appuser:appuser /app
 USER appuser
 
-EXPOSE 8080
-
-ENTRYPOINT ["./workflow-engine"]
+ENTRYPOINT ["./engine"]

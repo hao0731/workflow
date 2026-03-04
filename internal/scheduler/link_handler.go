@@ -48,7 +48,7 @@ func NewExecutionLinkHandler(store eventstore.ExecutionStore, opts ...ExecutionL
 	return h
 }
 
-// Start begins listening for ExecutionStarted events.
+// Start begins listening for execution lifecycle events.
 func (h *ExecutionLinkHandler) Start(ctx context.Context) error {
 	if h.subscriber == nil {
 		return nil
@@ -59,12 +59,21 @@ func (h *ExecutionLinkHandler) Start(ctx context.Context) error {
 	})
 }
 
-// Handle processes an ExecutionStarted event and creates/links executions.
+// Handle processes execution lifecycle events and updates the executions read model.
 func (h *ExecutionLinkHandler) Handle(ctx context.Context, event cloudevents.Event) error {
-	if event.Type() != engine.ExecutionStarted {
+	switch event.Type() {
+	case engine.ExecutionStarted:
+		return h.handleStarted(ctx, event)
+	case engine.ExecutionCompleted:
+		return h.handleCompleted(ctx, event)
+	case engine.ExecutionFailed:
+		return h.handleFailed(ctx, event)
+	default:
 		return nil
 	}
+}
 
+func (h *ExecutionLinkHandler) handleStarted(ctx context.Context, event cloudevents.Event) error {
 	executionID := event.Subject()
 	workflowID, _ := event.Extensions()["workflowid"].(string)
 	parentExecutionID, _ := event.Extensions()["parentexecutionid"].(string)
@@ -110,5 +119,47 @@ func (h *ExecutionLinkHandler) Handle(ctx context.Context, event cloudevents.Eve
 		)
 	}
 
+	return nil
+}
+
+func (h *ExecutionLinkHandler) handleCompleted(ctx context.Context, event cloudevents.Event) error {
+	executionID := event.Subject()
+	completedAt := event.Time()
+	if completedAt.IsZero() {
+		completedAt = time.Now()
+	}
+
+	if err := h.executionStore.UpdateStatusWithTime(ctx, executionID, eventstore.StatusCompleted, completedAt); err != nil {
+		h.logger.Error("failed to update execution status to completed",
+			slog.String("execution_id", executionID),
+			slog.Any("error", err),
+		)
+		return err
+	}
+
+	h.logger.Info("execution completed",
+		slog.String("execution_id", executionID),
+	)
+	return nil
+}
+
+func (h *ExecutionLinkHandler) handleFailed(ctx context.Context, event cloudevents.Event) error {
+	executionID := event.Subject()
+	failedAt := event.Time()
+	if failedAt.IsZero() {
+		failedAt = time.Now()
+	}
+
+	if err := h.executionStore.UpdateStatusWithTime(ctx, executionID, eventstore.StatusFailed, failedAt); err != nil {
+		h.logger.Error("failed to update execution status to failed",
+			slog.String("execution_id", executionID),
+			slog.Any("error", err),
+		)
+		return err
+	}
+
+	h.logger.Info("execution failed",
+		slog.String("execution_id", executionID),
+	)
 	return nil
 }

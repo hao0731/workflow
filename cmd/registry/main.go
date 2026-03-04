@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"os"
@@ -42,8 +43,8 @@ func main() {
 		os.Exit(1)
 	}
 	defer func() {
-		if err := mongoClient.Disconnect(context.Background()); err != nil {
-			logger.Error("failed to disconnect MongoDB", slog.Any("error", err))
+		if disconnectErr := mongoClient.Disconnect(context.Background()); disconnectErr != nil {
+			logger.Error("failed to disconnect MongoDB", slog.Any("error", disconnectErr))
 		}
 	}()
 	db := mongoClient.Database(cfg.MongoDatabase)
@@ -129,7 +130,7 @@ func main() {
 
 	// 8. Start server with graceful shutdown
 	go func() {
-		if err := e.Start(":" + cfg.Port); err != nil && err != http.ErrServerClosed {
+		if err := e.Start(":" + cfg.Port); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("server error", slog.Any("error", err))
 		}
 	}()

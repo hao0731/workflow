@@ -3,7 +3,6 @@ package config
 import (
 	"os"
 	"strconv"
-	"time"
 
 	"github.com/joho/godotenv"
 )
@@ -28,6 +27,14 @@ type Config struct {
 
 	// Workflow
 	WorkflowStore string
+
+	// Cassandra
+	CassandraHosts    string
+	CassandraKeyspace string
+	CassandraPort     int
+
+	// Migration (retained for backward compat with env vars)
+	MigrationPhase string
 }
 
 // Load reads configuration from environment variables.
@@ -54,6 +61,14 @@ func Load() *Config {
 
 		// Workflow
 		WorkflowStore: getEnv("WORKFLOW_STORE", "mongo"),
+
+		// Cassandra
+		CassandraHosts:    getEnv("CASSANDRA_HOSTS", "localhost"),
+		CassandraKeyspace: getEnv("CASSANDRA_KEYSPACE", "orchestration"),
+		CassandraPort:     getIntEnv("CASSANDRA_PORT", 9042),
+
+		// Migration
+		MigrationPhase: getEnv("MIGRATION_PHASE", "shadow"),
 	}
 }
 
@@ -84,15 +99,6 @@ func getBoolEnv(key string, fallback bool) bool {
 	if value, exists := os.LookupEnv(key); exists {
 		if b, err := strconv.ParseBool(value); err == nil {
 			return b
-		}
-	}
-	return fallback
-}
-
-func getDurationEnv(key string, fallback time.Duration) time.Duration {
-	if value, exists := os.LookupEnv(key); exists {
-		if d, err := time.ParseDuration(value); err == nil {
-			return d
 		}
 	}
 	return fallback

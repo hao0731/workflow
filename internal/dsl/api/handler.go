@@ -15,7 +15,6 @@ import (
 	"github.com/cheriehsieh/orchestration/internal/dsl"
 	"github.com/cheriehsieh/orchestration/internal/engine"
 	"github.com/cheriehsieh/orchestration/internal/eventbus"
-	"github.com/cheriehsieh/orchestration/internal/eventstore"
 	"github.com/cheriehsieh/orchestration/internal/marketplace"
 )
 
@@ -27,7 +26,6 @@ type WorkflowHandler struct {
 	converter     dsl.WorkflowConverter
 	logger        *slog.Logger
 	eventBus      eventbus.Publisher
-	eventStore    eventstore.EventStore
 	eventRegistry marketplace.EventRegistry
 }
 
@@ -38,13 +36,6 @@ type HandlerOption func(*WorkflowHandler)
 func WithEventBus(eb eventbus.Publisher) HandlerOption {
 	return func(h *WorkflowHandler) {
 		h.eventBus = eb
-	}
-}
-
-// WithEventStore sets the event store for persisting execution events.
-func WithEventStore(es eventstore.EventStore) HandlerOption {
-	return func(h *WorkflowHandler) {
-		h.eventStore = es
 	}
 }
 
@@ -146,8 +137,8 @@ func (h *WorkflowHandler) Create(c echo.Context) error {
 	}
 
 	// Validate
-	if err := h.validator.Validate(def); err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	if validateErr := h.validator.Validate(def); validateErr != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": validateErr.Error()})
 	}
 
 	// Convert to engine model
@@ -287,8 +278,8 @@ func (h *WorkflowHandler) Update(c echo.Context) error {
 	}
 
 	// Validate
-	if err := h.validator.Validate(def); err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	if validateErr := h.validator.Validate(def); validateErr != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": validateErr.Error()})
 	}
 
 	// Convert to engine model
@@ -411,18 +402,7 @@ func (h *WorkflowHandler) ExecuteWorkflow(c echo.Context) error {
 		InputData:  req.Input,
 	})
 
-	// Store event to MongoDB for tracking
-	if h.eventStore != nil {
-		if err := h.eventStore.Append(c.Request().Context(), event); err != nil {
-			h.logger.Error("failed to store execution event",
-				slog.String("workflow_id", workflowID),
-				slog.Any("error", err),
-			)
-			// Continue even if storage fails - publish is more important
-		}
-	}
-
-	// Publish to NATS
+	// Publish to NATS (events reach Cassandra through engine processing)
 	if err := h.eventBus.Publish(c.Request().Context(), event); err != nil {
 		h.logger.Error("failed to publish execution event",
 			slog.String("workflow_id", workflowID),

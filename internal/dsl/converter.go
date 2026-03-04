@@ -56,7 +56,7 @@ func (c *DefaultConverter) Convert(def *WorkflowDefinition) (*engine.Workflow, e
 }
 
 // convertNode converts a DSL node definition to an engine node.
-func (c *DefaultConverter) convertNode(nodeDef NodeDefinition) (engine.Node, error) {
+func (c *DefaultConverter) convertNode(nodeDef NodeDefinition) (engine.Node, error) { //nolint:unparam // error return reserved for future validation
 	node := engine.Node{
 		ID:         nodeDef.ID,
 		Name:       nodeDef.Name,

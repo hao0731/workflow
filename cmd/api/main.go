@@ -2,14 +2,17 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/gocql/gocql"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -68,9 +71,10 @@ func (r *InMemoryWorkflowRepo) FindByEventTrigger(_ context.Context, eventName, 
 
 // Handler holds dependencies for API handlers.
 type Handler struct {
-	workflows  WorkflowAPIRepo
-	eventStore eventstore.EventStore
-	logger     *slog.Logger
+	workflows      WorkflowAPIRepo
+	eventStore     eventstore.EventStore
+	executionStore eventstore.ExecutionStore
+	logger         *slog.Logger
 }
 
 // API Response types matching frontend TypeScript interfaces
@@ -165,19 +169,19 @@ func (h *Handler) getWorkflow(c echo.Context) error {
 func (h *Handler) listExecutions(c echo.Context) error {
 	workflowID := c.Param("id")
 
-	summaries, err := h.eventStore.GetExecutionsByWorkflow(c.Request().Context(), workflowID)
+	executions, err := h.executionStore.GetByWorkflowID(c.Request().Context(), workflowID)
 	if err != nil {
 		h.logger.Error("failed to list executions", slog.Any("error", err))
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 
-	response := make([]ExecutionResponse, len(summaries))
-	for i, s := range summaries {
+	response := make([]ExecutionResponse, len(executions))
+	for i, exec := range executions {
 		response[i] = ExecutionResponse{
-			ID:         s.ID,
-			WorkflowID: s.WorkflowID,
-			Status:     s.Status,
-			StartedAt:  s.StartedAt.Format(time.RFC3339),
+			ID:         exec.ID,
+			WorkflowID: exec.WorkflowID,
+			Status:     exec.Status,
+			StartedAt:  exec.StartedAt.Format(time.RFC3339),
 		}
 	}
 
@@ -201,7 +205,6 @@ func (h *Handler) listExecutionEvents(c echo.Context) error {
 			e.Type() == engine.NodeExecutionStarted ||
 			e.Type() == engine.NodeExecutionCompleted ||
 			e.Type() == engine.NodeExecutionFailed {
-
 			var data map[string]any
 			_ = e.DataAs(&data)
 
@@ -246,8 +249,33 @@ func main() {
 	}()
 	db := client.Database(cfg.MongoDatabase)
 
+	// 3b. Connect to Cassandra
+	cassandraCluster := gocql.NewCluster(strings.Split(cfg.CassandraHosts, ",")...)
+	cassandraCluster.Port = cfg.CassandraPort
+	cassandraCluster.Keyspace = cfg.CassandraKeyspace
+	cassandraCluster.Consistency = gocql.LocalQuorum
+
+	var cassandraSession *gocql.Session
+	for attempt := 1; attempt <= 5; attempt++ {
+		cassandraSession, err = cassandraCluster.CreateSession()
+		if err == nil {
+			break
+		}
+		logger.Warn("failed to connect to Cassandra, retrying...",
+			slog.Int("attempt", attempt),
+			slog.Any("error", err),
+		)
+		time.Sleep(time.Duration(attempt) * 2 * time.Second)
+	}
+	if err != nil {
+		logger.Error("failed to connect to Cassandra after retries", slog.Any("error", err))
+		os.Exit(1)
+	}
+	defer cassandraSession.Close()
+
 	// 4. Initialize repositories
-	eventStoreImpl := eventstore.NewMongoEventStore(db, "events")
+	eventStoreImpl := eventstore.NewCassandraEventStore(cassandraSession)
+	executionStore := eventstore.NewMongoExecutionStore(db, "executions")
 
 	// Define the same workflows as the engine
 	publisherWorkflow := &engine.Workflow{
@@ -303,7 +331,19 @@ func main() {
 	e.HideBanner = true
 
 	// Middleware
-	e.Use(middleware.Logger())
+	e.Use(middleware.RequestLoggerWithConfig(middleware.RequestLoggerConfig{
+		LogStatus: true,
+		LogURI:    true,
+		LogMethod: true,
+		LogValuesFunc: func(c echo.Context, v middleware.RequestLoggerValues) error {
+			logger.Info("request",
+				slog.String("method", v.Method),
+				slog.String("uri", v.URI),
+				slog.Int("status", v.Status),
+			)
+			return nil
+		},
+	}))
 	e.Use(middleware.Recover())
 	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
 		AllowOrigins: []string{"http://localhost:5173", "http://localhost:3000"},
@@ -312,16 +352,17 @@ func main() {
 
 	// 6. Register routes
 	handler := &Handler{
-		workflows:  workflowRepo,
-		eventStore: eventStoreImpl,
-		logger:     logger,
+		workflows:      workflowRepo,
+		eventStore:     eventStoreImpl,
+		executionStore: executionStore,
+		logger:         logger,
 	}
 
-	api := e.Group("/api")
-	api.GET("/workflows", handler.listWorkflows)
-	api.GET("/workflows/:id", handler.getWorkflow)
-	api.GET("/workflows/:id/executions", handler.listExecutions)
-	api.GET("/executions/:id/events", handler.listExecutionEvents)
+	apiGroup := e.Group("/api")
+	apiGroup.GET("/workflows", handler.listWorkflows)
+	apiGroup.GET("/workflows/:id", handler.getWorkflow)
+	apiGroup.GET("/workflows/:id/executions", handler.listExecutions)
+	apiGroup.GET("/executions/:id/events", handler.listExecutionEvents)
 
 	// 7. Start server in goroutine
 	go func() {
@@ -330,7 +371,7 @@ func main() {
 			port = "8081"
 		}
 		logger.Info("API server listening", slog.String("port", port))
-		if err := e.Start(":" + port); err != nil && err != http.ErrServerClosed {
+		if err := e.Start(":" + port); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("server error", slog.Any("error", err))
 			os.Exit(1)
 		}

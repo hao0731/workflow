@@ -287,7 +287,8 @@ connections:
 
 	var wf map[string]any
 	require.NoError(t, json.Unmarshal(getRec.Body.Bytes(), &wf))
-	nodes := wf["nodes"].([]any)
+	nodes, ok := wf["nodes"].([]any)
+	require.True(t, ok, "nodes should be []any")
 	assert.Len(t, nodes, 2)
 }
 

@@ -113,11 +113,11 @@ func (w *Worker) handleNodeExecutionScheduled(ctx context.Context, event cloudev
 		RunIndex: payload.RunIndex,
 	})
 
-	if err := w.eventStore.Append(ctx, startedEvent); err != nil {
-		return err
+	if appendErr := w.eventStore.Append(ctx, startedEvent); appendErr != nil {
+		return appendErr
 	}
-	if err := w.publisher.Publish(ctx, startedEvent); err != nil {
-		return err
+	if publishErr := w.publisher.Publish(ctx, startedEvent); publishErr != nil {
+		return publishErr
 	}
 
 	w.logger.InfoContext(ctx, "executing node",
