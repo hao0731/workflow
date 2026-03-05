@@ -1,46 +1,60 @@
 # Workflow Engine Technical Design (Workflow-Centric, Messaging v2)
 
-## 1. Overview
+## 1. Why This System Exists
 
-This document defines a workflow-centric technical design by consolidating:
+### 1.1 Core Problem
 
-- existing workflow orchestration design in `technical-design.md`
-- YAML workflow modeling rules in `workflow-dsl.md`
-- the latest messaging architecture decisions in `2026-03-04-workflow-messaging-architecture-design.md`
+Modern business workflows need a system that can:
 
-The system focuses on orchestration, not worker business logic. It executes DAG workflows, supports conditional routing and join synchronization, and integrates external services through a versioned event contract.
+- orchestrate complex DAG logic reliably
+- separate orchestration from worker implementation
+- integrate with external services through stable event contracts
+- provide safety guarantees (schema validation, idempotency, DLQ)
 
-Built-in node types are not executed as privileged in-process logic. They run as worker services using the same dispatch/result contract as custom workers. These built-in worker services are provided by this repository and must be started to execute their corresponding node types.
+This workflow engine solves those needs with an event-driven orchestration architecture.
 
-## 2. Goals and Non-Goals
+### 1.2 Design Focus
 
-### 2.1 Goals
+This system focuses on **orchestration**.  
+It does **not** implement worker business logic in the control plane.
 
-- Execute DAG-based workflows reliably.
-- Keep orchestration concerns isolated from worker implementation concerns.
-- Standardize workflow definition through YAML DSL.
-- Provide a stable, versioned messaging contract for internal coordination and external integration.
-- Support schema validation, idempotency, and dead-letter handling by default.
+All executable nodes, including built-in node types, run as worker services:
 
-### 2.2 Non-Goals
+- first-party workers (provided by this repository)
+- custom workers (provided by integrators)
 
-- Embedded in-process node execution paths that bypass scheduler/worker contracts.
-- Visual workflow editor implementation.
-- Full multi-tenant data isolation design in this phase.
+Both use the same scheduler dispatch/result contract.
 
-## 3. High-Level Architecture
+### 1.3 Scope and Non-Goals
+
+In scope:
+
+- workflow definition, validation, and orchestration
+- event contracts and runtime coordination
+- reliability primitives (dedup, schema validation, DLQ)
+- Cassandra-backed EventStore abstraction
+
+Out of scope:
+
+- visual workflow editor
+- in-process privileged node execution paths that bypass worker contracts
+- full multi-tenant data isolation design in this phase
+
+## 2. System Mental Model
+
+### 2.1 Conceptual View
 
 ```mermaid
 flowchart LR
   EXT["External Services"]
-  FPW["First-Party Worker Services (repo-provided)\nStartNode / JoinNode / PublishEvent"]
+  FPW["First-Party Worker Services\n(StartNode / JoinNode / PublishEvent)"]
   CWW["Custom Worker Services"]
-  NATS["NATS JetStream (Single Cluster)\nWF_COMMANDS / WF_EVENTS / WF_RUNTIME / WF_DLQ"]
+  NATS["NATS JetStream\nWF_COMMANDS / WF_EVENTS / WF_RUNTIME / WF_DLQ"]
   API["workflow-api"]
   ORC["orchestrator"]
   SCH["scheduler"]
   REG["workflow-schema-registry"]
-  ES["EventStore interface\n(Mongo adapter in Phase 1)"]
+  ES["EventStore interface\n(Cassandra adapter in Phase 1)"]
 
   EXT <-->|workflow.command.* / workflow.event.*| NATS
   FPW <-->|workflow.command.node.execute.* / workflow.event.node.executed.v1| NATS
@@ -54,20 +68,21 @@ flowchart LR
   SCH --> ES
 ```
 
-### 3.1 Component Responsibilities
+### 2.2 Component Responsibilities
 
 | Component | Responsibility |
 |---|---|
 | `workflow-api` | Workflow CRUD and execution entrypoint. Converts REST or command events into runtime execution-start events. |
 | `orchestrator` | DAG traversal and execution state progression. Decides next nodes and emits schedule events. |
 | `scheduler` | Converts schedule events into worker dispatch commands. Validates node-result schemas and returns execution results to orchestrator. |
-| `first-party worker services` | Worker implementations shipped by this repository for built-in node types. Must be deployed/running to execute those node types. |
+| `first-party worker services` | Worker implementations shipped by this repository for built-in node types. Must be running to execute those node types. |
+| `custom worker services` | External worker implementations for custom node types. |
 | `workflow-schema-registry` | Versioned schema lookup for event payload validation. |
 | `EventStore` | Persistent event/audit and dedup record abstraction. |
 
-## 4. Workflow Domain Model
+## 3. Workflow Modeling
 
-The workflow model remains the canonical runtime structure.
+### 3.1 Runtime Domain Model
 
 ```go
 type Workflow struct {
@@ -81,7 +96,6 @@ type Node struct {
     Type       NodeType
     Name       string
     Parameters map[string]any
-    Trigger    *Trigger // optional, mainly for StartNode
 }
 
 type Connection struct {
@@ -92,22 +106,20 @@ type Connection struct {
 }
 ```
 
-### 4.1 Node Type Categories
+### 3.2 Node Type Strategy
 
-| Category | Type | Purpose |
+| Category | Type | Execution Model |
 |---|---|---|
-| Built-in worker node (first-party) | `StartNode` | Workflow entrypoint behavior executed by a repo-provided worker service. |
-| Built-in worker node (first-party) | `JoinNode` | Fan-in continuation behavior executed by a repo-provided worker service. |
-| Built-in worker node (first-party) | `PublishEvent` | Domain event publish behavior executed by a repo-provided worker service. |
-| Custom worker node | `<node_type>@<version>` | Executed by custom worker services using the same worker protocol. |
+| Built-in first-party worker node | `StartNode` | Executed by repo-provided worker service |
+| Built-in first-party worker node | `JoinNode` | Executed by repo-provided worker service |
+| Built-in first-party worker node | `PublishEvent` | Executed by repo-provided worker service |
+| Custom worker node | `<node_type>@<version>` | Executed by custom worker service |
 
-Runtime normalization rule:
+Normalization rule:
 
-- Subject naming uses normalized lowercase node identifiers in dispatch subjects (for example `start-node`, `join-node`, `publish-event`).
+- dispatch subjects use normalized lowercase node identifiers (for example `start-node`, `join-node`, `publish-event`)
 
-## 5. Workflow YAML DSL
-
-### 5.1 Top-Level Structure
+### 3.3 YAML DSL Shape
 
 ```yaml
 id: <workflow-id>
@@ -125,84 +137,39 @@ events:
   - <event-definition> # optional
 ```
 
-### 5.2 Node and Connection Rules
+### 3.4 DSL Validation Rules
 
-- Every node must define `id` and `type`.
-- Every connection must define `from` and `to`.
-- `from_port` selects branch output (for conditional routing).
-- `to_port` maps predecessor output into named join input.
-- Worker-backed nodes use `full_type` format: `<node_type>@<version>`.
-- Built-in node types are mapped to first-party worker services provided by this repository and require those services to be running.
+- each node has `id` and `type`
+- each connection has `from` and `to`
+- exactly one `StartNode`
+- no DAG cycles
+- `JoinNode.inputs` must match incoming `to_port`
+- event trigger criteria must include `event_name` and `domain`
 
-### 5.3 Template Expressions
-
-Supported value templates:
+Supported templates:
 
 - `{{.input.<field>}}`
 - `{{.event.<field>}}`
 - `{{.node.<id>.<field>}}`
 
-### 5.4 Validation Rules (Compile-Time)
+## 4. Event-Driven Runtime Design
 
-- Required fields are present.
-- Connection references point to existing nodes.
-- Exactly one `StartNode` exists.
-- Graph must be acyclic.
-- `JoinNode.inputs` must match incoming `to_port` definitions.
-- Event trigger criteria must include `event_name` and `domain`.
+### 4.1 Event Planes and Naming
 
-## 6. Workflow Execution Semantics
-
-### 6.1 Lifecycle
-
-```text
-execution.started -> node.scheduled -> node.executed -> ... -> execution.completed|execution.failed
-```
-
-### 6.2 Routing by Output Port
-
-- Worker result contains an output port (`default`, `success`, `failure`, `true`, `false`, or custom).
-- Orchestrator selects next edges by matching `from_port`.
-
-### 6.3 Join Synchronization
-
-For each join node execution context, orchestrator tracks:
-
-- expected predecessor set
-- completed predecessor set
-- combined input map keyed by `to_port`
-
-Only when all required predecessors complete does orchestrator emit `node.scheduled` for the join node.
-
-### 6.4 Service Boundary
-
-- Orchestrator answers: "what executes next?"
-- Scheduler answers: "how and where does it execute?"
-
-This boundary allows independent scaling and fault isolation.
-
-### 6.5 Uniform Worker Execution Model
-
-- All executable nodes, including built-in node types, are dispatched through scheduler -> worker command subjects.
-- There is no privileged execution path that bypasses worker contracts.
-- If a required first-party worker service is not running, its node type is effectively unavailable and execution may fail or retry according to scheduler policy.
-
-## 7. Messaging Architecture (v2)
-
-### 7.1 Naming Convention
+Naming pattern:
 
 ```text
 workflow.<plane>.<resource>.<action>[.<nodeType>].v<version>
 ```
 
-`plane` is one of:
+Planes:
 
 - `command`
 - `event`
 - `runtime`
 - `dlq`
 
-### 7.2 Stream Layout (Single JetStream Service)
+### 4.2 Stream Layout (Single JetStream Service)
 
 | Stream | Subjects |
 |---|---|
@@ -211,38 +178,210 @@ workflow.<plane>.<resource>.<action>[.<nodeType>].v<version>
 | `WF_RUNTIME` | `workflow.runtime.>` |
 | `WF_DLQ` | `workflow.dlq.>` |
 
-Non-overlap requirement: do not define broad streams like `workflow.>` together with plane-specific streams.
+Constraint:
 
-### 7.3 Core Subjects
+- do not define broad streams like `workflow.>` alongside plane-specific streams
+
+### 4.3 Core Subjects and Ownership
 
 | Subject | Publisher | Subscriber | Purpose |
 |---|---|---|---|
-| `workflow.command.execute.v1` | external producer / workflow-api bridge | workflow-api | Start a workflow execution command |
-| `workflow.runtime.execution.started.v1` | workflow-api | orchestrator | Internal execution initialization |
-| `workflow.runtime.node.scheduled.v1` | orchestrator | scheduler | Internal scheduling command |
-| `workflow.command.node.execute.<nodeType>.v<version>` | scheduler | first-party or custom worker service | Node dispatch command |
-| `workflow.event.node.executed.v1` | first-party or custom worker service | scheduler | Node execution result |
-| `workflow.runtime.node.executed.v1` | scheduler | orchestrator | Internal node completion handoff |
-| `workflow.dlq.scheduler.validation.v1` | scheduler | ops / compensation consumer | Validation failure dead-letter |
+| `workflow.command.execute.v1` | external producer / workflow-api bridge | workflow-api | start execution command |
+| `workflow.runtime.execution.started.v1` | workflow-api | orchestrator | internal execution initialization |
+| `workflow.runtime.node.scheduled.v1` | orchestrator | scheduler | internal node scheduling command |
+| `workflow.command.node.execute.<nodeType>.v<version>` | scheduler | first-party/custom worker | node dispatch |
+| `workflow.event.node.executed.v1` | first-party/custom worker | scheduler | node execution result |
+| `workflow.runtime.node.executed.v1` | scheduler | orchestrator | internal node completion handoff |
+| `workflow.dlq.scheduler.validation.v1` | scheduler | ops/compensation consumer | validation dead-letter |
 
-### 7.4 CloudEvents Contract
+### 4.4 End-to-End Lifecycle
 
-All message payloads use CloudEvents v1.0 envelope. Required extension fields:
+```mermaid
+flowchart LR
+  A["execution.started"]
+  B["node.scheduled"]
+  C["node.executed"]
+  D{"more nodes?"}
+  E["execution.completed"]
+  F["execution.failed"]
+
+  A --> B --> C --> D
+  D -->|yes| B
+  D -->|no| E
+  C -->|fatal error| F
+```
+
+### 4.5 Routing by Output Port
+
+```mermaid
+flowchart TD
+  A["Node executed"]
+  B["Worker emits NodeResult\nwith output_port"]
+  C["Orchestrator loads outgoing edges"]
+  D{"match connection.from_port\n== output_port ?"}
+  E["Schedule matched next node(s)"]
+  F["No matched edge\n-> execution terminal check"]
+
+  A --> B --> C --> D
+  D -->|yes| E
+  D -->|no| F
+```
+
+### 4.6 Join Synchronization Semantics
+
+Orchestrator maintains join state per execution:
+
+- expected predecessors
+- completed predecessors
+- combined input map by `to_port`
+
+Join scheduling happens only when all required predecessors complete.
+
+Join responsibility split:
+
+| Responsibility | Owner |
+|---|---|
+| Track predecessor completion | `orchestrator` |
+| Persist and update join wait state | `orchestrator` + `EventStore` |
+| Decide join readiness and schedule | `orchestrator` |
+| Execute post-join node behavior | `JoinNode` first-party worker |
+
+Rule:
+
+- join readiness must never depend on worker-local state
+
+### 4.7 Service Boundary
+
+- Orchestrator: "what executes next?"
+- Scheduler: "how and where does it execute?"
+
+This boundary enables independent scaling and fault isolation.
+
+## 5. Event Contracts
+
+### 5.1 CloudEvents Envelope
+
+All messages use CloudEvents v1.0.
+
+Required extension fields:
 
 - `workflowid`
 - `executionid`
 - `idempotencykey`
 - `producer`
 
-Additional required fields for node results:
+For node result events, additionally required:
 
 - `nodeid`
 - `runindex`
 - `attempt`
 
-## 8. ACL Model
+### 5.2 CloudEvents Examples
 
-Principle: `default deny`, minimum required permissions per principal.
+Execution command example:
+
+```json
+{
+  "specversion": "1.0",
+  "id": "ce_cmd_01J6ABCDEF",
+  "source": "hr-system",
+  "type": "workflow.command.execute.v1",
+  "subject": "workflow/hr-onboarding",
+  "time": "2026-03-05T09:00:00Z",
+  "datacontenttype": "application/json",
+  "workflowid": "hr-onboarding",
+  "executionid": "exec_20260305_0001",
+  "idempotencykey": "cmd:hr-system:employee:emp_1001:onboard:v1",
+  "producer": "hr-system",
+  "data": {
+    "workflowId": "hr-onboarding",
+    "input": {
+      "employeeId": "emp_1001"
+    }
+  }
+}
+```
+
+Node result example:
+
+```json
+{
+  "specversion": "1.0",
+  "id": "ce_node_01J6XYZ123",
+  "source": "worker/send-email-v1",
+  "type": "workflow.event.node.executed.v1",
+  "subject": "execution/exec_20260305_0001",
+  "time": "2026-03-05T09:00:03Z",
+  "datacontenttype": "application/json",
+  "workflowid": "hr-onboarding",
+  "executionid": "exec_20260305_0001",
+  "nodeid": "send-welcome-email",
+  "runindex": 0,
+  "attempt": 1,
+  "idempotencykey": "node:exec_20260305_0001:send-welcome-email:0:1:v1",
+  "producer": "worker/send-email-v1",
+  "data": {
+    "outputPort": "success",
+    "outputData": {
+      "messageId": "mail_7788"
+    }
+  }
+}
+```
+
+Invalid result example (missing `nodeid`) must fail schema validation and be routed to `workflow.dlq.scheduler.validation.v1`.
+
+## 6. Reliability and Safety
+
+### 6.1 Idempotency and Dedup
+
+Dedup keys:
+
+- execute command: `source + idempotencykey`
+- node result: `executionid + nodeid + runindex + attempt + idempotencykey`
+
+NATS-level dedup:
+
+- set `Nats-Msg-Id` to CloudEvent `id`
+- enable JetStream dedup window
+
+Business-level dedup remains in EventStore.
+
+Example keys:
+
+```text
+hr-system|cmd:hr-system:employee:emp_1001:onboard:v1
+exec_20260304_0001|send-welcome-email|0|1|node:exec_20260304_0001:send-welcome-email:0:1:v1
+```
+
+### 6.2 Schema Validation and DLQ
+
+Scheduler validates `workflow.event.node.executed.v1` against schema registry.
+
+Lookup API:
+
+```text
+GET /schemas/events/{eventType}/versions/{version}
+```
+
+Cache:
+
+- in-memory LRU with TTL
+- refresh on version/ETag changes
+
+On validation failure:
+
+- publish to `workflow.dlq.scheduler.validation.v1`
+- ACK original message to avoid infinite redelivery
+
+NATS built-in assistance:
+
+- `MaxDeliver`, `AckWait`, `BackOff`
+- advisory monitoring via `$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES...`
+
+### 6.3 ACL Model
+
+Principle: `default deny`, per-service credentials.
 
 | Principal | Publish Allow | Subscribe Allow |
 |---|---|---|
@@ -254,65 +393,17 @@ Principle: `default deny`, minimum required permissions per principal.
 | `external-worker` | `workflow.event.node.executed.v1` | `workflow.command.node.execute.<nodeType>.>` |
 | `ops-dlq-consumer` | none | `workflow.dlq.>` |
 
-## 9. Idempotency and Deduplication
+Example permission shape:
 
-### 9.1 Dedup Keys
-
-- Execute command dedup key: `source + idempotencykey`
-- Node result dedup key: `executionid + nodeid + runindex + attempt + idempotencykey`
-
-### 9.2 NATS-Level Dedup
-
-- Set `Nats-Msg-Id` to CloudEvent `id`.
-- Enable JetStream dedup window (short time window).
-- Keep application-level dedup in EventStore as source of truth.
-
-### 9.3 Example Keys
-
-Execute command:
-
-```text
-hr-system|cmd:hr-system:employee:emp_1001:onboard:v1
+```hcl
+# scheduler
+publish   = ["workflow.command.node.execute.>", "workflow.runtime.node.executed.v1", "workflow.dlq.scheduler.validation.v1"]
+subscribe = ["workflow.runtime.node.scheduled.v1", "workflow.event.node.executed.v1"]
 ```
 
-Node result:
+## 7. Data and State (Cassandra EventStore)
 
-```text
-exec_20260304_0001|send-welcome-email|0|1|node:exec_20260304_0001:send-welcome-email:0:1:v1
-```
-
-## 10. Schema Validation and DLQ
-
-### 10.1 Schema Validation
-
-Scheduler validates `workflow.event.node.executed.v1` payloads against schema versions from `workflow-schema-registry`.
-
-Lookup API:
-
-```text
-GET /schemas/events/{eventType}/versions/{version}
-```
-
-Cache recommendation:
-
-- in-memory LRU with TTL
-- refresh on schema version or ETag changes
-
-### 10.2 DLQ Strategy
-
-Primary approach:
-
-- On validation failure, scheduler publishes full failure payload to `workflow.dlq.scheduler.validation.v1`.
-- Original message is ACKed to prevent infinite redelivery loops.
-
-NATS built-in assisted approach:
-
-- Configure `MaxDeliver`, `AckWait`, `BackOff`.
-- Consume advisory subject `$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES...` for alerting and optional forwarding.
-
-## 11. EventStore Abstraction and MongoDB Adapter
-
-Services depend on interface only:
+### 7.1 EventStore Interface
 
 ```go
 type EventStore interface {
@@ -322,17 +413,70 @@ type EventStore interface {
 }
 ```
 
-Phase 1 adapter:
+### 7.2 Cassandra Keyspace and Tables
 
-- `MongoEventStore` for event persistence and dedup records
-- unique index on dedup key
-- TTL index for dedup expiration
+```sql
+CREATE KEYSPACE IF NOT EXISTS workflow_engine
+WITH replication = {
+  'class': 'NetworkTopologyStrategy',
+  'datacenter1': 3
+};
+```
 
-This keeps replacement to PostgreSQL/Redis possible without orchestrator/scheduler behavior changes.
+```sql
+CREATE TABLE IF NOT EXISTS workflow_engine.execution_events (
+  execution_id text,
+  event_day date,
+  event_time timestamp,
+  event_id text,
+  workflow_id text,
+  event_type text,
+  source text,
+  subject text,
+  payload text,
+  PRIMARY KEY ((execution_id, event_day), event_time, event_id)
+) WITH CLUSTERING ORDER BY (event_time ASC, event_id ASC);
+```
 
-## 12. Runtime Sequence Diagrams
+```sql
+CREATE TABLE IF NOT EXISTS workflow_engine.dedup_keys (
+  dedup_key text PRIMARY KEY,
+  created_at timestamp
+);
+```
 
-### 12.1 End-to-End Workflow Execution
+### 7.3 Query Paths and Write Rules
+
+Primary query paths:
+
+- append/replay by `execution_id`
+- fetch recent events by `execution_id + event_day`
+- idempotency check by `dedup_key`
+
+Dedup write pattern (LWT):
+
+```sql
+INSERT INTO workflow_engine.dedup_keys (dedup_key, created_at)
+VALUES (?, toTimestamp(now()))
+IF NOT EXISTS
+USING TTL ?;
+```
+
+Interpretation:
+
+- `applied=true`: first seen, continue processing
+- `applied=false`: duplicate, skip processing
+
+### 7.4 Operational Defaults
+
+- RF: 3 (production baseline)
+- write consistency: `LOCAL_QUORUM`
+- read consistency: `LOCAL_QUORUM`
+- dedup TTL: 24h to 72h (by message class)
+
+## 8. Runtime Behavior Examples
+
+### 8.1 End-to-End Execution Sequence
 
 ```mermaid
 sequenceDiagram
@@ -357,7 +501,7 @@ sequenceDiagram
   N->>ORC: deliver node.executed
 ```
 
-### 12.2 Schema Validation Failure Path
+### 8.2 Validation Failure Sequence
 
 ```mermaid
 sequenceDiagram
@@ -376,44 +520,20 @@ sequenceDiagram
   SCH-->>N: ack original message
 ```
 
-## 13. Scalability and Operations
+## 9. Scalability and Operational Notes
 
-- Orchestrator scales by execution concurrency and join-state pressure.
-- Scheduler scales by node throughput and worker dispatch load.
-- Workers scale per node type queue depth, including first-party built-in node workers.
-- Use queue groups for horizontal consumers on runtime subjects.
-- Keep join state in a distributed store when running multiple orchestrator replicas.
+- Orchestrator scales with execution concurrency and join-state pressure.
+- Scheduler scales with node throughput and dispatch load.
+- Workers scale by node-type queue depth.
+- Use queue groups for horizontal runtime consumers.
+- Use distributed join state backing for multi-orchestrator deployments.
 
-### 13.1 Built-in Worker Service Requirement
+Built-in worker availability rule:
 
-- Built-in node types are available only when their corresponding first-party worker services are deployed and healthy.
-- Production deployment should include health checks and readiness gates for first-party workers before accepting execution traffic for workflows that depend on them.
+- built-in node types are available only when first-party worker services are deployed and healthy
 
-## 14. Migration Notes from Legacy Subject Model
-
-Legacy subjects in `technical-design.md`:
-
-- `workflow.events.execution`
-- `workflow.events.scheduler`
-- `workflow.events.results`
-- `workflow.nodes.<type>.<version>`
-
-Target subjects in this design:
-
-- `workflow.runtime.*`
-- `workflow.command.*`
-- `workflow.event.*`
-- `workflow.dlq.*`
-
-Recommended migration:
-
-1. Introduce new streams and subjects.
-2. Dual publish during transition with clear sunset date.
-3. Move consumers one by one to new subjects.
-4. Remove legacy subjects after verification.
-
-## 15. Open Questions
+## 10. Open Questions
 
 - Should `workflow.command.execute.v1` support batch execution semantics?
-- Which service is the single owner of `attempt` increments: scheduler or orchestrator?
-- Default behavior on schema registry outage: fail-open or fail-closed?
+- Which service should own `attempt` increments: scheduler or orchestrator?
+- What should be the default schema-registry outage policy: fail-open or fail-closed?
