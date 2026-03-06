@@ -26,6 +26,7 @@ import (
 	"github.com/cheriehsieh/orchestration/internal/marketplace"
 	"github.com/cheriehsieh/orchestration/internal/messaging"
 	"github.com/cheriehsieh/orchestration/internal/scheduler"
+	"github.com/cheriehsieh/orchestration/internal/schema"
 	"github.com/cheriehsieh/orchestration/internal/worker"
 )
 
@@ -178,6 +179,22 @@ func main() {
 
 	// Cassandra Event Store: sole source for event persistence
 	eventStoreImpl := eventstore.NewCassandraEventStore(cassandraSession)
+
+	var schemaCache *schema.Cache
+	if cfg.SchemaRegistryURL != "" {
+		schemaCache, err = schema.NewCachedClient(cfg.SchemaRegistryURL, cfg.SchemaCacheTTL)
+		if err != nil {
+			logger.Error("failed to configure schema registry client", slog.Any("error", err))
+			os.Exit(1)
+		}
+		logger.Info("schema registry client configured",
+			slog.String("url", cfg.SchemaRegistryURL),
+			slog.Duration("cache_ttl", cfg.SchemaCacheTTL),
+		)
+	} else {
+		logger.Info("schema registry client disabled")
+	}
+	_ = schemaCache
 
 	// 6b. Initialize Execution Store for linking
 	executionStore := eventstore.NewMongoExecutionStore(db, "executions")

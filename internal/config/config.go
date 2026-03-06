@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/joho/godotenv"
 )
@@ -32,6 +33,10 @@ type Config struct {
 	CassandraHosts    string
 	CassandraKeyspace string
 	CassandraPort     int
+
+	// Schema Registry
+	SchemaRegistryURL string
+	SchemaCacheTTL    time.Duration
 
 	// Migration (retained for backward compat with env vars)
 	MigrationPhase string
@@ -67,6 +72,10 @@ func Load() *Config {
 		CassandraKeyspace: getEnv("CASSANDRA_KEYSPACE", "orchestration"),
 		CassandraPort:     getIntEnv("CASSANDRA_PORT", 9042),
 
+		// Schema Registry
+		SchemaRegistryURL: getEnv("SCHEMA_REGISTRY_URL", ""),
+		SchemaCacheTTL:    getDurationEnv("SCHEMA_CACHE_TTL", 5*time.Minute),
+
 		// Migration
 		MigrationPhase: getEnv("MIGRATION_PHASE", "shadow"),
 	}
@@ -101,5 +110,15 @@ func getBoolEnv(key string, fallback bool) bool {
 			return b
 		}
 	}
+	return fallback
+}
+
+func getDurationEnv(key string, fallback time.Duration) time.Duration {
+	if value, exists := os.LookupEnv(key); exists {
+		if duration, err := time.ParseDuration(value); err == nil {
+			return duration
+		}
+	}
+
 	return fallback
 }

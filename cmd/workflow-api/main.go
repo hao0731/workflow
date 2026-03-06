@@ -25,6 +25,7 @@ import (
 	"github.com/cheriehsieh/orchestration/internal/eventstore"
 	"github.com/cheriehsieh/orchestration/internal/marketplace"
 	"github.com/cheriehsieh/orchestration/internal/messaging"
+	"github.com/cheriehsieh/orchestration/internal/schema"
 )
 
 func main() {
@@ -80,6 +81,22 @@ func main() {
 	defer cassandraSession.Close()
 
 	eventStore := eventstore.NewCassandraEventStore(cassandraSession)
+
+	var schemaCache *schema.Cache
+	if cfg.SchemaRegistryURL != "" {
+		schemaCache, err = schema.NewCachedClient(cfg.SchemaRegistryURL, cfg.SchemaCacheTTL)
+		if err != nil {
+			logger.Error("failed to configure schema registry client", slog.Any("error", err))
+			os.Exit(1)
+		}
+		logger.Info("schema registry client configured",
+			slog.String("url", cfg.SchemaRegistryURL),
+			slog.Duration("cache_ttl", cfg.SchemaCacheTTL),
+		)
+	} else {
+		logger.Info("schema registry client disabled")
+	}
+	_ = schemaCache
 
 	// 4. Initialize workflow store based on config
 	store, err := dsl.NewWorkflowStoreFromConfig(cfg.WorkflowStore, db)
