@@ -54,6 +54,22 @@ services:
     networks:
       - orchestration
 
+  orchestrator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: orchestration-orchestrator
+    entrypoint: ["./orchestrator"]
+    environment:
+      MONGO_URI: mongodb://orchestration-mongodb:27017
+      MONGO_DATABASE: orchestration
+      NATS_URL: nats://orchestration-nats:4222
+      CASSANDRA_HOSTS: orchestration-cassandra
+      CASSANDRA_KEYSPACE: orchestration
+      CASSANDRA_PORT: 9042
+    networks:
+      - orchestration
+
 networks:
   orchestration:
     external: true

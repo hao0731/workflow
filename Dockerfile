@@ -16,6 +16,7 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -buildvcs=false -ldflags="-w -s" -o /app/engine ./cmd/engine
 RUN CGO_ENABLED=0 GOOS=linux go build -buildvcs=false -ldflags="-w -s" -o /app/api ./cmd/api
 RUN CGO_ENABLED=0 GOOS=linux go build -buildvcs=false -ldflags="-w -s" -o /app/workflow-api ./cmd/workflow-api
+RUN CGO_ENABLED=0 GOOS=linux go build -buildvcs=false -ldflags="-w -s" -o /app/orchestrator ./cmd/orchestrator
 
 # Runtime stage
 FROM alpine:3.19
@@ -28,6 +29,7 @@ RUN apk --no-cache add ca-certificates
 COPY --from=builder /app/engine .
 COPY --from=builder /app/api .
 COPY --from=builder /app/workflow-api .
+COPY --from=builder /app/orchestrator .
 
 # Copy scripts for schema init
 COPY scripts/ ./scripts/

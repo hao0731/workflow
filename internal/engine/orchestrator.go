@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -11,12 +12,13 @@ import (
 
 	"github.com/cheriehsieh/orchestration/internal/eventbus"
 	"github.com/cheriehsieh/orchestration/internal/eventstore"
+	"github.com/cheriehsieh/orchestration/internal/messaging"
 )
 
 type Orchestrator struct {
 	eventStore   eventstore.EventStore
 	publisher    eventbus.Publisher
-	subscriber   eventbus.Subscriber
+	subscribers  []eventbus.Subscriber
 	workflowRepo WorkflowRepository
 	joinManager  *JoinStateManager
 	logger       *slog.Logger
@@ -32,7 +34,7 @@ func NewOrchestrator(
 	o := &Orchestrator{
 		eventStore:   es,
 		publisher:    pub,
-		subscriber:   sub,
+		subscribers:  []eventbus.Subscriber{sub},
 		workflowRepo: repo,
 		joinManager:  NewJoinStateManager(NewInMemoryJoinStateStore()), // Default
 		logger:       slog.Default(),
@@ -45,6 +47,14 @@ func NewOrchestrator(
 
 // OrchestratorOption is a functional option for Orchestrator.
 type OrchestratorOption func(*Orchestrator)
+
+// OrchestratorRuntimeSubjects returns the runtime subjects owned by the orchestrator service.
+func OrchestratorRuntimeSubjects() []string {
+	return []string{
+		messaging.SubjectRuntimeExecutionStartedV1,
+		messaging.SubjectRuntimeNodeExecutedV1,
+	}
+}
 
 // WithOrchestratorLogger sets a custom logger.
 func WithOrchestratorLogger(logger *slog.Logger) OrchestratorOption {
@@ -60,8 +70,51 @@ func WithJoinStateManager(manager *JoinStateManager) OrchestratorOption {
 	}
 }
 
+// WithOrchestratorSubscribers overrides the default subscriber set.
+func WithOrchestratorSubscribers(subscribers ...eventbus.Subscriber) OrchestratorOption {
+	return func(o *Orchestrator) {
+		o.subscribers = append([]eventbus.Subscriber(nil), subscribers...)
+	}
+}
+
 func (o *Orchestrator) Start(ctx context.Context) error {
-	return o.subscriber.Subscribe(ctx, func(ctx context.Context, event cloudevents.Event) error {
+	if len(o.subscribers) == 0 {
+		return errors.New("orchestrator has no subscribers")
+	}
+
+	if len(o.subscribers) == 1 {
+		return o.subscribe(ctx, o.subscribers[0])
+	}
+
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	errCh := make(chan error, len(o.subscribers))
+	for _, subscriber := range o.subscribers {
+		currentSubscriber := subscriber
+		go func() {
+			errCh <- o.subscribe(runCtx, currentSubscriber)
+		}()
+	}
+
+	var firstErr error
+	for range o.subscribers {
+		err := <-errCh
+		if err != nil && !errors.Is(err, context.Canceled) && firstErr == nil {
+			firstErr = err
+			cancel()
+		}
+	}
+
+	if firstErr != nil {
+		return firstErr
+	}
+
+	return ctx.Err()
+}
+
+func (o *Orchestrator) subscribe(ctx context.Context, subscriber eventbus.Subscriber) error {
+	return subscriber.Subscribe(ctx, func(ctx context.Context, event cloudevents.Event) error {
 		slog.InfoContext(ctx, "event received",
 			slog.String("event_type", event.Type()),
 			slog.String("subject", event.Subject()),

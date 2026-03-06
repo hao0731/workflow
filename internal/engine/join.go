@@ -4,12 +4,18 @@ import (
 	"context"
 	"errors"
 	"sync"
+
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 var (
 	ErrJoinStateNotFound = errors.New("join state not found")
 	ErrJoinStateConflict = errors.New("join state conflict (CAS failure)")
 )
+
+var _ JoinStateStore = (*MongoJoinStateStore)(nil)
 
 // PendingJoin tracks the state of a join node waiting for inputs.
 type PendingJoin struct {
@@ -181,4 +187,77 @@ func FindToPort(workflow *Workflow, sourceNode, targetNode string) string {
 
 func IsJoinNode(n *Node) bool {
 	return n != nil && n.Type == JoinNode
+}
+
+// MongoJoinStateStore persists join state with optimistic concurrency.
+type MongoJoinStateStore struct {
+	collection *mongo.Collection
+}
+
+// NewMongoJoinStateStore creates a MongoDB-backed join-state store.
+func NewMongoJoinStateStore(db *mongo.Database, collectionName string) *MongoJoinStateStore {
+	return &MongoJoinStateStore{
+		collection: db.Collection(collectionName),
+	}
+}
+
+func (s *MongoJoinStateStore) Get(ctx context.Context, executionID, joinNodeID string) (*PendingJoin, error) {
+	var state PendingJoin
+	err := s.collection.FindOne(ctx, bson.M{"_id": joinStateKey(executionID, joinNodeID)}).Decode(&state)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, ErrJoinStateNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	return &state, nil
+}
+
+func (s *MongoJoinStateStore) Save(ctx context.Context, state *PendingJoin) error {
+	nextVersion := state.Version + 1
+	replacement := bson.M{
+		"_id":              joinStateKey(state.ExecutionID, state.JoinNodeID),
+		"execution_id":     state.ExecutionID,
+		"join_node_id":     state.JoinNodeID,
+		"workflow_id":      state.WorkflowID,
+		"required_nodes":   state.RequiredNodes,
+		"completed_nodes":  state.CompletedNodes,
+		"collected_inputs": state.CollectedInputs,
+		"version":          nextVersion,
+	}
+
+	filter := bson.M{
+		"_id":     joinStateKey(state.ExecutionID, state.JoinNodeID),
+		"version": state.Version,
+	}
+
+	opts := options.Replace()
+	if state.Version == 0 {
+		opts.SetUpsert(true)
+	}
+
+	result, err := s.collection.ReplaceOne(ctx, filter, replacement, opts)
+	if err != nil {
+		if mongo.IsDuplicateKeyError(err) {
+			return ErrJoinStateConflict
+		}
+		return err
+	}
+
+	if state.Version != 0 && result.MatchedCount == 0 {
+		return ErrJoinStateConflict
+	}
+
+	state.Version = nextVersion
+	return nil
+}
+
+func (s *MongoJoinStateStore) Delete(ctx context.Context, executionID, joinNodeID string) error {
+	_, err := s.collection.DeleteOne(ctx, bson.M{"_id": joinStateKey(executionID, joinNodeID)})
+	return err
+}
+
+func joinStateKey(executionID, joinNodeID string) string {
+	return executionID + ":" + joinNodeID
 }
