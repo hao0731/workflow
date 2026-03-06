@@ -51,6 +51,18 @@ func (m *mockEventStore) GetEventsByExecution(_ context.Context, executionID str
 	return filtered, nil
 }
 
+func (m *mockEventStore) ExistsByDedupKey(_ context.Context, dedupKey string) (bool, error) {
+	_, ok := m.events[dedupKey]
+	return ok, nil
+}
+
+func (m *mockEventStore) SaveDedupRecord(_ context.Context, dedupKey string, _ time.Duration) error {
+	if _, ok := m.events[dedupKey]; !ok {
+		m.events[dedupKey] = nil
+	}
+	return nil
+}
+
 // mockExecutionStoreForAPI is a test double for eventstore.ExecutionStore.
 type mockExecutionStoreForAPI struct {
 	executions map[string]*eventstore.Execution

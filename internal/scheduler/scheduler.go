@@ -3,7 +3,10 @@ package scheduler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"strconv"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -17,7 +20,9 @@ import (
 
 const (
 	// EventSource for scheduler events.
-	EventSource = "orchestration/scheduler"
+	EventSource        = "orchestration/scheduler"
+	defaultNodeAttempt = 1
+	nodeResultDedupTTL = 72 * time.Hour
 )
 
 var (
@@ -33,6 +38,7 @@ type NodeDispatchData struct {
 	InputData   map[string]any `json:"input_data,omitempty"`
 	Parameters  map[string]any `json:"parameters,omitempty"`
 	RunIndex    int            `json:"run_index"`
+	Attempt     int            `json:"attempt"`
 }
 
 // NodeResultData is returned by workers.
@@ -151,11 +157,18 @@ func (s *Scheduler) handleScheduled(ctx context.Context, event cloudevents.Event
 			s.logger.ErrorContext(ctx, "node type not registered",
 				slog.String("node_type", dispatchType),
 			)
-			return s.publishNodeExecuted(ctx, event.Subject(), workflowID, engine.NodeExecutionResultData{
-				NodeID:   payload.NodeID,
-				RunIndex: payload.RunIndex,
-				Error:    ErrNodeTypeNotRegistered.Error(),
-			})
+			return s.publishNodeExecuted(
+				ctx,
+				event.Subject(),
+				workflowID,
+				nodeExecutionIdempotencyKey(event.Subject(), payload.NodeID, payload.RunIndex, defaultNodeAttempt),
+				defaultNodeAttempt,
+				engine.NodeExecutionResultData{
+					NodeID:   payload.NodeID,
+					RunIndex: payload.RunIndex,
+					Error:    ErrNodeTypeNotRegistered.Error(),
+				},
+			)
 		}
 	}
 
@@ -166,8 +179,13 @@ func (s *Scheduler) handleScheduled(ctx context.Context, event cloudevents.Event
 
 	// Dispatch to worker via the versioned command subject for this node type.
 	dispatchEvent := s.newEvent(messaging.CommandNodeExecuteSubjectFromFullType(dispatchType), event.Subject())
+	idempotencyKey := nodeExecutionIdempotencyKey(event.Subject(), payload.NodeID, payload.RunIndex, defaultNodeAttempt)
 	dispatchEvent.SetExtension("workflowid", workflowID)
 	dispatchEvent.SetExtension("executionid", event.Subject())
+	dispatchEvent.SetExtension("nodeid", payload.NodeID)
+	dispatchEvent.SetExtension("runindex", payload.RunIndex)
+	dispatchEvent.SetExtension("attempt", defaultNodeAttempt)
+	dispatchEvent.SetExtension("idempotencykey", idempotencyKey)
 	dispatchEvent.SetExtension("producer", "scheduler")
 	_ = dispatchEvent.SetData(cloudevents.ApplicationJSON, NodeDispatchData{
 		ExecutionID: event.Subject(),
@@ -177,6 +195,7 @@ func (s *Scheduler) handleScheduled(ctx context.Context, event cloudevents.Event
 		InputData:   payload.InputData,
 		Parameters:  node.Parameters,
 		RunIndex:    payload.RunIndex,
+		Attempt:     defaultNodeAttempt,
 	})
 
 	return s.dispatcher.Dispatch(ctx, dispatchType, dispatchEvent)
@@ -204,12 +223,34 @@ func (s *Scheduler) handleResult(ctx context.Context, event cloudevents.Event) e
 		slog.String("output_port", result.OutputPort),
 	)
 
+	attempt := eventExtensionInt(event, "attempt", defaultNodeAttempt)
+	idempotencyKey := eventExtensionString(event, "idempotencykey")
+	if idempotencyKey == "" {
+		idempotencyKey = nodeExecutionIdempotencyKey(executionID, result.NodeID, result.RunIndex, attempt)
+	}
+	dedupRecordKey := nodeResultDedupRecordKey(executionID, result.NodeID, result.RunIndex, attempt, idempotencyKey)
+	exists, err := s.eventStore.ExistsByDedupKey(ctx, dedupRecordKey)
+	if err != nil {
+		return fmt.Errorf("check node-result dedup key: %w", err)
+	}
+	if exists {
+		s.logger.InfoContext(ctx, "duplicate worker result ignored",
+			slog.String("execution_id", executionID),
+			slog.String("node_id", result.NodeID),
+			slog.String("dedup_key", dedupRecordKey),
+		)
+		return nil
+	}
+	if err := s.eventStore.SaveDedupRecord(ctx, dedupRecordKey, nodeResultDedupTTL); err != nil {
+		return fmt.Errorf("save node-result dedup key: %w", err)
+	}
+
 	port := result.OutputPort
 	if port == "" {
 		port = engine.DefaultPort
 	}
 
-	return s.publishNodeExecuted(ctx, executionID, workflowID, engine.NodeExecutionResultData{
+	return s.publishNodeExecuted(ctx, executionID, workflowID, idempotencyKey, attempt, engine.NodeExecutionResultData{
 		NodeID:     result.NodeID,
 		OutputPort: port,
 		OutputData: result.OutputData,
@@ -227,13 +268,17 @@ func (s *Scheduler) newEvent(eventType, subject string) cloudevents.Event {
 	return event
 }
 
-func (s *Scheduler) publishNodeExecuted(ctx context.Context, executionID, workflowID string, result engine.NodeExecutionResultData) error {
+func (s *Scheduler) publishNodeExecuted(ctx context.Context, executionID, workflowID, idempotencyKey string, attempt int, result engine.NodeExecutionResultData) error {
 	executedEvent := s.newEvent(engine.NodeExecutionExecuted, executionID)
 	executedEvent.SetExtension("workflowid", workflowID)
 	executedEvent.SetExtension("executionid", executionID)
 	executedEvent.SetExtension("producer", "scheduler")
 	executedEvent.SetExtension("nodeid", result.NodeID)
 	executedEvent.SetExtension("runindex", result.RunIndex)
+	executedEvent.SetExtension("attempt", attempt)
+	if idempotencyKey != "" {
+		executedEvent.SetExtension("idempotencykey", idempotencyKey)
+	}
 	_ = executedEvent.SetData(cloudevents.ApplicationJSON, result)
 
 	if err := s.eventStore.Append(ctx, executedEvent); err != nil {
@@ -241,4 +286,50 @@ func (s *Scheduler) publishNodeExecuted(ctx context.Context, executionID, workfl
 	}
 
 	return s.publisher.Publish(ctx, executedEvent)
+}
+
+func nodeExecutionIdempotencyKey(executionID, nodeID string, runIndex, attempt int) string {
+	return fmt.Sprintf("node:%s:%s:%d:%d:v1", executionID, nodeID, runIndex, attempt)
+}
+
+func nodeResultDedupRecordKey(executionID, nodeID string, runIndex, attempt int, idempotencyKey string) string {
+	return fmt.Sprintf("%s|%s|%d|%d|%s", executionID, nodeID, runIndex, attempt, idempotencyKey)
+}
+
+func eventExtensionString(event cloudevents.Event, key string) string {
+	value, ok := event.Extensions()[key]
+	if !ok {
+		return ""
+	}
+
+	if strValue, ok := value.(string); ok {
+		return strValue
+	}
+
+	return fmt.Sprint(value)
+}
+
+func eventExtensionInt(event cloudevents.Event, key string, fallback int) int {
+	value, ok := event.Extensions()[key]
+	if !ok {
+		return fallback
+	}
+
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case int32:
+		return int(typed)
+	case int64:
+		return int(typed)
+	case float64:
+		return int(typed)
+	case string:
+		parsed, err := strconv.Atoi(typed)
+		if err == nil {
+			return parsed
+		}
+	}
+
+	return fallback
 }

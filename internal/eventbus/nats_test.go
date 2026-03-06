@@ -120,3 +120,25 @@ func TestNATSEventBusPublishWithOptions(t *testing.T) {
 	assert.Equal(t, event.ID(), got.ID())
 	assert.Equal(t, event.Type(), got.Type())
 }
+
+func TestNATSEventBusPublish_SetsNatsMsgIDFromCloudEventID(t *testing.T) {
+	t.Parallel()
+
+	js := &fakeJetStream{}
+	bus := NewNATSEventBus(js, messaging.SubjectRuntimeExecutionStartedV1, "workflow-api")
+
+	event := cloudevents.NewEvent()
+	event.SetID("ce-execution-456")
+	event.SetSource("test/workflow-api")
+	event.SetType(messaging.EventTypeRuntimeExecutionStartedV1)
+	require.NoError(t, event.SetData(cloudevents.ApplicationJSON, map[string]any{
+		"workflow_id":  "wf-456",
+		"execution_id": "execution-456",
+	}))
+
+	err := bus.Publish(context.Background(), event)
+	require.NoError(t, err)
+
+	require.Len(t, js.published, 1)
+	assert.Equal(t, "ce-execution-456", js.published[0].Header.Get("Nats-Msg-Id"))
+}

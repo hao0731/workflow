@@ -164,6 +164,7 @@ func main() {
 	// Workflow routes use the registry's metadata-aware persistence when supported.
 	workflowHandler := dslapi.NewWorkflowHandler(registry, logger,
 		dslapi.WithEventBus(executionEventBus),
+		dslapi.WithEventStore(eventStore),
 		dslapi.WithEventRegistry(eventRegistry),
 	)
 	workflowHandler.RegisterRoutes(apiGroup)

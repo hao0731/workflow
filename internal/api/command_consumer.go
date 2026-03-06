@@ -15,10 +15,11 @@ import (
 
 // ExecutionStartCommand is the shared request shape used by REST and NATS execute paths.
 type ExecutionStartCommand struct {
-	WorkflowID  string
-	ExecutionID string
-	Input       map[string]any
-	Producer    string
+	WorkflowID     string
+	ExecutionID    string
+	IdempotencyKey string
+	Input          map[string]any
+	Producer       string
 }
 
 // ExecutionStartResult is the shared response from the execution-start path.
@@ -107,10 +108,11 @@ func (c *CommandConsumer) Handle(ctx context.Context, event cloudevents.Event) e
 	}
 
 	command := ExecutionStartCommand{
-		WorkflowID:  workflowID,
-		ExecutionID: eventExtensionString(event, "executionid"),
-		Input:       payload.Input,
-		Producer:    producer,
+		WorkflowID:     workflowID,
+		ExecutionID:    eventExtensionString(event, "executionid"),
+		IdempotencyKey: eventExtensionString(event, "idempotencykey"),
+		Input:          payload.Input,
+		Producer:       producer,
 	}
 
 	result, err := c.starter.StartExecution(ctx, command)

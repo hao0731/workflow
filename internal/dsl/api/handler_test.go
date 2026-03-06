@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"log/slog"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	workflowapi "github.com/cheriehsieh/orchestration/internal/api"
 	"github.com/cheriehsieh/orchestration/internal/dsl"
 	"github.com/cheriehsieh/orchestration/internal/engine"
 	"github.com/cheriehsieh/orchestration/internal/marketplace"
@@ -28,6 +30,38 @@ type mockEventBus struct {
 
 func (m *mockEventBus) Publish(_ context.Context, event cloudevents.Event) error {
 	m.events = append(m.events, event)
+	return nil
+}
+
+type mockDedupEventStore struct {
+	keys map[string]time.Duration
+}
+
+func newMockDedupEventStore() *mockDedupEventStore {
+	return &mockDedupEventStore{
+		keys: make(map[string]time.Duration),
+	}
+}
+
+func (s *mockDedupEventStore) Append(_ context.Context, _ cloudevents.Event) error {
+	return nil
+}
+
+func (s *mockDedupEventStore) GetBySubject(_ context.Context, _ string) ([]cloudevents.Event, error) {
+	return nil, nil
+}
+
+func (s *mockDedupEventStore) GetEventsByExecution(_ context.Context, _ string, _ *time.Time) ([]cloudevents.Event, error) {
+	return nil, nil
+}
+
+func (s *mockDedupEventStore) ExistsByDedupKey(_ context.Context, dedupKey string) (bool, error) {
+	_, ok := s.keys[dedupKey]
+	return ok, nil
+}
+
+func (s *mockDedupEventStore) SaveDedupRecord(_ context.Context, dedupKey string, ttl time.Duration) error {
+	s.keys[dedupKey] = ttl
 	return nil
 }
 
@@ -520,6 +554,89 @@ connections: []
 	assert.Equal(t, "exec-test", eventBus.events[0].Extensions()["workflowid"])
 	assert.Equal(t, resp["execution_id"], eventBus.events[0].Extensions()["executionid"])
 	assert.Equal(t, "workflow-api/rest", eventBus.events[0].Extensions()["producer"])
+}
+
+func TestWorkflowHandler_Execute_IdempotentDedupReturnsExistingExecutionID(t *testing.T) {
+	registry := dsl.NewWorkflowRegistry()
+	logger := slog.Default()
+	eventBus := &mockEventBus{}
+	dedupStore := newMockDedupEventStore()
+	handler := NewWorkflowHandler(registry, logger, WithEventBus(eventBus), WithEventStore(dedupStore))
+
+	e := echo.New()
+	handler.RegisterRoutes(e.Group(""))
+
+	wfBody := []byte(`
+id: exec-idempotent
+nodes:
+  - id: start
+    type: StartNode
+connections: []
+`)
+	createReq := httptest.NewRequest(http.MethodPost, "/workflows", bytes.NewReader(wfBody))
+	e.ServeHTTP(httptest.NewRecorder(), createReq)
+
+	execBody := []byte(`{"input": {"employeeId": "emp-1001"}}`)
+	req1 := httptest.NewRequest(http.MethodPost, "/workflows/exec-idempotent/execute", bytes.NewReader(execBody))
+	req1.Header.Set("Content-Type", "application/json")
+	req1.Header.Set("Idempotency-Key", "employee:emp-1001:onboard:v1")
+	rec1 := httptest.NewRecorder()
+	e.ServeHTTP(rec1, req1)
+	require.Equal(t, http.StatusCreated, rec1.Code)
+
+	req2 := httptest.NewRequest(http.MethodPost, "/workflows/exec-idempotent/execute", bytes.NewReader(execBody))
+	req2.Header.Set("Content-Type", "application/json")
+	req2.Header.Set("Idempotency-Key", "employee:emp-1001:onboard:v1")
+	rec2 := httptest.NewRecorder()
+	e.ServeHTTP(rec2, req2)
+	require.Equal(t, http.StatusCreated, rec2.Code)
+
+	var resp1 map[string]any
+	var resp2 map[string]any
+	require.NoError(t, json.Unmarshal(rec1.Body.Bytes(), &resp1))
+	require.NoError(t, json.Unmarshal(rec2.Body.Bytes(), &resp2))
+
+	assert.Equal(t, resp1["execution_id"], resp2["execution_id"])
+	require.Len(t, eventBus.events, 1)
+	assert.Equal(t, "employee:emp-1001:onboard:v1", eventBus.events[0].Extensions()["idempotencykey"])
+}
+
+func TestWorkflowHandler_StartExecution_IdempotentCommandReturnsExistingExecutionID(t *testing.T) {
+	registry := dsl.NewWorkflowRegistry()
+	logger := slog.Default()
+	eventBus := &mockEventBus{}
+	dedupStore := newMockDedupEventStore()
+	handler := NewWorkflowHandler(registry, logger, WithEventBus(eventBus), WithEventStore(dedupStore))
+
+	e := echo.New()
+	handler.RegisterRoutes(e.Group(""))
+
+	wfBody := []byte(`
+id: exec-command-idempotent
+nodes:
+  - id: start
+    type: StartNode
+connections: []
+`)
+	createReq := httptest.NewRequest(http.MethodPost, "/workflows", bytes.NewReader(wfBody))
+	e.ServeHTTP(httptest.NewRecorder(), createReq)
+
+	command := workflowapi.ExecutionStartCommand{
+		WorkflowID:     "exec-command-idempotent",
+		Producer:       "hr-system",
+		IdempotencyKey: "cmd:hr-system:employee:emp-1001:onboard:v1",
+		Input:          map[string]any{"employeeId": "emp-1001"},
+	}
+
+	first, err := handler.StartExecution(context.Background(), command)
+	require.NoError(t, err)
+
+	second, err := handler.StartExecution(context.Background(), command)
+	require.NoError(t, err)
+
+	assert.Equal(t, first.ExecutionID, second.ExecutionID)
+	require.Len(t, eventBus.events, 1)
+	assert.Equal(t, "cmd:hr-system:employee:emp-1001:onboard:v1", eventBus.events[0].Extensions()["idempotencykey"])
 }
 
 // Test: Execute workflow not found

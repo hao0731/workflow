@@ -107,6 +107,14 @@ func (b *NATSEventBus) PublishWithOptions(_ context.Context, event cloudevents.E
 
 	msg := nats.NewMsg(cfg.subject)
 	msg.Data = data
+	if event.ID() != "" {
+		if cfg.headers == nil {
+			cfg.headers = make(nats.Header)
+		}
+		if cfg.headers.Get("Nats-Msg-Id") == "" {
+			cfg.headers.Set("Nats-Msg-Id", event.ID())
+		}
+	}
 	if cfg.headers != nil {
 		msg.Header = cloneHeader(cfg.headers)
 	}

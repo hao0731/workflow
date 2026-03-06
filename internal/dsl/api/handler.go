@@ -17,11 +17,14 @@ import (
 	"github.com/cheriehsieh/orchestration/internal/dsl"
 	"github.com/cheriehsieh/orchestration/internal/engine"
 	"github.com/cheriehsieh/orchestration/internal/eventbus"
+	"github.com/cheriehsieh/orchestration/internal/eventstore"
 	"github.com/cheriehsieh/orchestration/internal/marketplace"
 	"github.com/cheriehsieh/orchestration/internal/messaging"
 )
 
 var errExecutionNotAvailable = errors.New("execution not available - event bus not configured")
+
+const executionCommandDedupTTL = 24 * time.Hour
 
 // WorkflowHandler handles HTTP requests for workflow management.
 type WorkflowHandler struct {
@@ -31,6 +34,7 @@ type WorkflowHandler struct {
 	converter     dsl.WorkflowConverter
 	logger        *slog.Logger
 	eventBus      eventbus.Publisher
+	eventStore    eventstore.EventStore
 	eventRegistry marketplace.EventRegistry
 }
 
@@ -41,6 +45,13 @@ type HandlerOption func(*WorkflowHandler)
 func WithEventBus(eb eventbus.Publisher) HandlerOption {
 	return func(h *WorkflowHandler) {
 		h.eventBus = eb
+	}
+}
+
+// WithEventStore sets the event store used for execution idempotency checks.
+func WithEventStore(store eventstore.EventStore) HandlerOption {
+	return func(h *WorkflowHandler) {
+		h.eventStore = store
 	}
 }
 
@@ -386,9 +397,10 @@ func (h *WorkflowHandler) ExecuteWorkflow(c echo.Context) error {
 	}
 
 	result, err := h.StartExecution(c.Request().Context(), workflowapi.ExecutionStartCommand{
-		WorkflowID: workflowID,
-		Input:      req.Input,
-		Producer:   "workflow-api/rest",
+		WorkflowID:     workflowID,
+		IdempotencyKey: c.Request().Header.Get("Idempotency-Key"),
+		Input:          req.Input,
+		Producer:       "workflow-api/rest",
 	})
 	if err != nil {
 		switch {
@@ -423,14 +435,37 @@ func (h *WorkflowHandler) StartExecution(ctx context.Context, command workflowap
 	}
 
 	startedAt := time.Now().UTC()
-	executionID := command.ExecutionID
-	if executionID == "" {
-		executionID = fmt.Sprintf("exec-%d", startedAt.UnixNano())
-	}
-
 	producer := command.Producer
 	if producer == "" {
 		producer = "workflow-api"
+	}
+
+	dedupKey := executionDedupKey(producer, command.IdempotencyKey)
+	executionID := command.ExecutionID
+	if executionID == "" {
+		if dedupKey != "" {
+			executionID = deterministicExecutionID(dedupKey)
+		} else {
+			executionID = fmt.Sprintf("exec-%d", startedAt.UnixNano())
+		}
+	}
+
+	if dedupKey != "" && h.eventStore != nil {
+		exists, err := h.eventStore.ExistsByDedupKey(ctx, dedupKey)
+		if err != nil {
+			return nil, fmt.Errorf("check execution dedup key: %w", err)
+		}
+		if exists {
+			return &workflowapi.ExecutionStartResult{
+				ExecutionID: executionID,
+				WorkflowID:  command.WorkflowID,
+				Status:      "started",
+				StartedAt:   startedAt,
+			}, nil
+		}
+		if err := h.eventStore.SaveDedupRecord(ctx, dedupKey, executionCommandDedupTTL); err != nil {
+			return nil, fmt.Errorf("save execution dedup key: %w", err)
+		}
 	}
 
 	event := cloudevents.NewEvent()
@@ -442,6 +477,9 @@ func (h *WorkflowHandler) StartExecution(ctx context.Context, command workflowap
 	event.SetExtension("workflowid", command.WorkflowID)
 	event.SetExtension("executionid", executionID)
 	event.SetExtension("producer", producer)
+	if command.IdempotencyKey != "" {
+		event.SetExtension("idempotencykey", command.IdempotencyKey)
+	}
 	_ = event.SetData(cloudevents.ApplicationJSON, engine.ExecutionStartedData{
 		WorkflowID: command.WorkflowID,
 		InputData:  command.Input,
@@ -463,4 +501,16 @@ func (h *WorkflowHandler) StartExecution(ctx context.Context, command workflowap
 		Status:      "started",
 		StartedAt:   startedAt,
 	}, nil
+}
+
+func executionDedupKey(producer, idempotencyKey string) string {
+	if idempotencyKey == "" {
+		return ""
+	}
+
+	return producer + "|" + idempotencyKey
+}
+
+func deterministicExecutionID(dedupKey string) string {
+	return "exec-" + uuid.NewSHA1(uuid.NameSpaceOID, []byte(dedupKey)).String()
 }

@@ -19,7 +19,9 @@ import (
 
 // captureEventStore captures appended events for inspection.
 type captureEventStore struct {
-	events []cloudevents.Event
+	events        []cloudevents.Event
+	dedupKeys     map[string]time.Duration
+	savedDedupKey []string
 }
 
 func (s *captureEventStore) Append(_ context.Context, event cloudevents.Event) error {
@@ -33,6 +35,25 @@ func (s *captureEventStore) GetBySubject(_ context.Context, _ string) ([]cloudev
 
 func (s *captureEventStore) GetEventsByExecution(_ context.Context, _ string, _ *time.Time) ([]cloudevents.Event, error) {
 	return nil, nil
+}
+
+func (s *captureEventStore) ExistsByDedupKey(_ context.Context, dedupKey string) (bool, error) {
+	if s.dedupKeys == nil {
+		return false, nil
+	}
+
+	_, ok := s.dedupKeys[dedupKey]
+	return ok, nil
+}
+
+func (s *captureEventStore) SaveDedupRecord(_ context.Context, dedupKey string, ttl time.Duration) error {
+	if s.dedupKeys == nil {
+		s.dedupKeys = make(map[string]time.Duration)
+	}
+
+	s.dedupKeys[dedupKey] = ttl
+	s.savedDedupKey = append(s.savedDedupKey, dedupKey)
+	return nil
 }
 
 // capturePublisher captures published events for inspection.
@@ -262,4 +283,51 @@ func TestScheduler_HandleResult_PublishesRuntimeNodeExecutedV1(t *testing.T) {
 	assert.Equal(t, engine.PortSuccess, data.OutputPort)
 	assert.Equal(t, map[string]any{"status": "ok"}, data.OutputData)
 	assert.Equal(t, 1, data.RunIndex)
+}
+
+func TestScheduler_HandleResult_DedupIgnoresDuplicateNodeResults(t *testing.T) {
+	store := &captureEventStore{}
+	publisher := &capturePublisher{}
+
+	s := NewScheduler(
+		store,
+		publisher,
+		nil,
+		nil,
+		&captureDispatcher{},
+		&staticWorkflowRepo{},
+		WithSchedulerLogger(noopLogger()),
+	)
+
+	newResultEvent := func(id string) cloudevents.Event {
+		event := cloudevents.NewEvent()
+		event.SetID(id)
+		event.SetSource("worker/http-request-v1")
+		event.SetType(messaging.EventTypeNodeExecutedV1)
+		event.SetSubject("exec-2")
+		event.SetExtension("workflowid", "workflow-2")
+		event.SetExtension("executionid", "exec-2")
+		event.SetExtension("nodeid", "custom")
+		event.SetExtension("runindex", 1)
+		event.SetExtension("attempt", 1)
+		event.SetExtension("idempotencykey", "node:exec-2:custom:1:1:v1")
+		_ = event.SetData(cloudevents.ApplicationJSON, NodeResultData{
+			ExecutionID: "exec-2",
+			NodeID:      "custom",
+			OutputPort:  engine.PortSuccess,
+			OutputData:  map[string]any{"status": "ok"},
+			RunIndex:    1,
+		})
+		return event
+	}
+
+	err := s.handleResult(context.Background(), newResultEvent("node-result-1"))
+	require.NoError(t, err)
+
+	err = s.handleResult(context.Background(), newResultEvent("node-result-2"))
+	require.NoError(t, err)
+
+	require.Len(t, store.events, 1)
+	require.Len(t, publisher.events, 1)
+	assert.Equal(t, []string{"exec-2|custom|1|1|node:exec-2:custom:1:1:v1"}, store.savedDedupKey)
 }
