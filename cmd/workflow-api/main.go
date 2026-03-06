@@ -7,17 +7,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
-	"github.com/gocql/gocql"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
-	"github.com/nats-io/nats.go"
-	"go.mongodb.org/mongo-driver/mongo"
 
 	"github.com/cheriehsieh/orchestration/internal/api"
+	"github.com/cheriehsieh/orchestration/internal/bootstrap"
 	"github.com/cheriehsieh/orchestration/internal/config"
 	"github.com/cheriehsieh/orchestration/internal/dsl"
 	dslapi "github.com/cheriehsieh/orchestration/internal/dsl/api"
@@ -33,49 +30,29 @@ func main() {
 	cfg := config.Load()
 
 	// 2. Setup logger
-	logger := config.SetupLogger(cfg.Env)
+	logger := bootstrap.NewLogger(cfg)
 	logger.Info("starting workflow API server",
 		slog.String("env", cfg.Env),
 	)
 
 	// 3. Connect to MongoDB
-	mongoOpts, err := cfg.MongoClientOptions()
-	if err != nil {
-		logger.Error("invalid MongoDB configuration", slog.Any("error", err))
-		os.Exit(1)
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	mongoClient, err := mongo.Connect(ctx, mongoOpts)
+	mongoClient, db, err := bootstrap.ConnectMongo(ctx, cfg, bootstrap.DefaultMongoConnect)
 	cancel()
 	if err != nil {
 		logger.Error("failed to connect to MongoDB", slog.Any("error", err))
 		os.Exit(1)
 	}
-	defer func() { _ = mongoClient.Disconnect(context.Background()) }()
-
-	db := mongoClient.Database(cfg.MongoDatabase)
+	defer func() {
+		if disconnectErr := mongoClient.Disconnect(context.Background()); disconnectErr != nil {
+			logger.Error("failed to disconnect MongoDB", slog.Any("error", disconnectErr))
+		}
+	}()
 
 	// 3b. Connect to Cassandra
-	cassandraCluster := gocql.NewCluster(strings.Split(cfg.CassandraHosts, ",")...)
-	cassandraCluster.Port = cfg.CassandraPort
-	cassandraCluster.Keyspace = cfg.CassandraKeyspace
-	cassandraCluster.Consistency = gocql.LocalQuorum
-
-	var cassandraSession *gocql.Session
-	for attempt := 1; attempt <= 5; attempt++ {
-		cassandraSession, err = cassandraCluster.CreateSession()
-		if err == nil {
-			break
-		}
-		logger.Warn("failed to connect to Cassandra, retrying...",
-			slog.Int("attempt", attempt),
-			slog.Any("error", err),
-		)
-		time.Sleep(time.Duration(attempt) * 2 * time.Second)
-	}
+	cassandraSession, err := bootstrap.OpenCassandraSession(cfg, logger)
 	if err != nil {
-		logger.Error("failed to connect to Cassandra after retries", slog.Any("error", err))
+		logger.Error("failed to connect to Cassandra", slog.Any("error", err))
 		os.Exit(1)
 	}
 	defer cassandraSession.Close()
@@ -108,23 +85,12 @@ func main() {
 	logger.Info("workflow store initialized", slog.String("type", cfg.WorkflowStore))
 
 	// 5. Connect to NATS
-	nc, err := nats.Connect(cfg.NATSURL)
+	nc, js, err := bootstrap.ConnectNATS(cfg, bootstrap.DefaultNATSConnect, bootstrap.DefaultNATSBootstrap, true)
 	if err != nil {
 		logger.Error("failed to connect to NATS", slog.Any("error", err))
 		os.Exit(1)
 	}
 	defer nc.Close()
-
-	js, err := nc.JetStream()
-	if err != nil {
-		logger.Error("failed to create JetStream context", slog.Any("error", err))
-		os.Exit(1)
-	}
-
-	if err := eventbus.BootstrapWorkflowStreams(js, true); err != nil {
-		logger.Error("failed to bootstrap workflow streams", slog.Any("error", err))
-		os.Exit(1)
-	}
 
 	// Create EventBus instances for the v2 execute flow.
 	executionEventBus := eventbus.NewNATSEventBus(js, messaging.SubjectRuntimeExecutionStartedV1, "workflow-api-runtime", eventbus.WithLogger(logger))

@@ -12,11 +12,9 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
-	"github.com/nats-io/nats.go"
-	"go.mongodb.org/mongo-driver/mongo"
 
+	"github.com/cheriehsieh/orchestration/internal/bootstrap"
 	"github.com/cheriehsieh/orchestration/internal/config"
-	"github.com/cheriehsieh/orchestration/internal/eventbus"
 	"github.com/cheriehsieh/orchestration/internal/registry"
 )
 
@@ -25,20 +23,14 @@ func main() {
 	cfg := config.Load()
 
 	// 2. Setup logger
-	logger := config.SetupLogger(cfg.Env)
+	logger := bootstrap.NewLogger(cfg)
 	logger.Info("starting node registry service",
 		slog.String("env", cfg.Env),
 		slog.String("port", cfg.Port),
 	)
 
 	// 3. Connect to MongoDB
-	mongoOpts, err := cfg.MongoClientOptions()
-	if err != nil {
-		logger.Error("invalid MongoDB configuration", slog.Any("error", err))
-		os.Exit(1)
-	}
-
-	mongoClient, err := mongo.Connect(context.Background(), mongoOpts)
+	mongoClient, db, err := bootstrap.ConnectMongo(context.Background(), cfg, bootstrap.DefaultMongoConnect)
 	if err != nil {
 		logger.Error("failed to connect to MongoDB", slog.Any("error", err))
 		os.Exit(1)
@@ -48,26 +40,13 @@ func main() {
 			logger.Error("failed to disconnect MongoDB", slog.Any("error", disconnectErr))
 		}
 	}()
-	db := mongoClient.Database(cfg.MongoDatabase)
-
 	// 4. Connect to NATS
-	nc, err := nats.Connect(cfg.NATSURL)
+	nc, js, err := bootstrap.ConnectNATS(cfg, bootstrap.DefaultNATSConnect, bootstrap.DefaultNATSBootstrap, true)
 	if err != nil {
 		logger.Error("failed to connect to NATS", slog.Any("error", err))
 		os.Exit(1)
 	}
 	defer nc.Close()
-
-	js, err := nc.JetStream()
-	if err != nil {
-		logger.Error("failed to create JetStream context", slog.Any("error", err))
-		os.Exit(1)
-	}
-
-	if err := eventbus.BootstrapWorkflowStreams(js, true); err != nil {
-		logger.Error("failed to bootstrap workflow streams", slog.Any("error", err))
-		os.Exit(1)
-	}
 
 	// 5. Initialize Registry components
 	jwtSecret := os.Getenv("JWT_SECRET")

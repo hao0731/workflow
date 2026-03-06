@@ -7,17 +7,15 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
-	"github.com/gocql/gocql"
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
-	"go.mongodb.org/mongo-driver/mongo"
 
 	cloudevents "github.com/cloudevents/sdk-go/v2"
 
+	"github.com/cheriehsieh/orchestration/internal/bootstrap"
 	"github.com/cheriehsieh/orchestration/internal/config"
 	"github.com/cheriehsieh/orchestration/internal/dsl"
 	"github.com/cheriehsieh/orchestration/internal/engine"
@@ -35,75 +33,46 @@ func main() {
 	cfg := config.Load()
 
 	// 2. Setup logger
-	logger := config.SetupLogger(cfg.Env)
+	logger := bootstrap.NewLogger(cfg)
 	logger.Info("starting workflow engine with Event Marketplace",
 		slog.String("env", cfg.Env),
 	)
 
 	// 3. Connect to MongoDB
-	mongoOpts, err := cfg.MongoClientOptions()
-	if err != nil {
-		logger.Error("invalid MongoDB configuration", slog.Any("error", err))
-		os.Exit(1)
-	}
-
 	mongoCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	client, err := mongo.Connect(mongoCtx, mongoOpts)
+	client, db, err := bootstrap.ConnectMongo(mongoCtx, cfg, bootstrap.DefaultMongoConnect)
+	cancel()
 	if err != nil {
 		logger.Error("failed to connect to MongoDB", slog.Any("error", err))
 		os.Exit(1)
 	}
 	defer func() {
-		_ = client.Disconnect(context.Background())
+		if disconnectErr := client.Disconnect(context.Background()); disconnectErr != nil {
+			logger.Error("failed to disconnect MongoDB", slog.Any("error", disconnectErr))
+		}
 	}()
-	db := client.Database(cfg.MongoDatabase)
 
 	// 3b. Connect to Cassandra
-	cassandraCluster := gocql.NewCluster(strings.Split(cfg.CassandraHosts, ",")...)
-	cassandraCluster.Port = cfg.CassandraPort
-	cassandraCluster.Keyspace = cfg.CassandraKeyspace
-	cassandraCluster.Consistency = gocql.LocalQuorum
-
-	var cassandraSession *gocql.Session
-	for attempt := 1; attempt <= 5; attempt++ {
-		cassandraSession, err = cassandraCluster.CreateSession()
-		if err == nil {
-			break
-		}
-		logger.Warn("failed to connect to Cassandra, retrying...",
-			slog.Int("attempt", attempt),
-			slog.Any("error", err),
-		)
-		time.Sleep(time.Duration(attempt) * 2 * time.Second)
-	}
+	cassandraSession, err := bootstrap.OpenCassandraSession(cfg, logger)
 	if err != nil {
-		logger.Error("failed to connect to Cassandra after retries", slog.Any("error", err))
+		logger.Error("failed to connect to Cassandra", slog.Any("error", err))
 		os.Exit(1)
 	}
 	defer cassandraSession.Close()
 
 	// 4. Connect to NATS
-	nc, err := nats.Connect(cfg.NATSURL)
+	nc, js, err := bootstrap.ConnectNATS(
+		cfg,
+		bootstrap.DefaultNATSConnect,
+		bootstrap.DefaultNATSBootstrap,
+		true,
+		nats.StreamConfig{Name: "MARKETPLACE", Subjects: []string{"marketplace.>"}},
+	)
 	if err != nil {
 		logger.Error("failed to connect to NATS", slog.Any("error", err))
 		os.Exit(1)
 	}
 	defer nc.Close()
-
-	js, err := nc.JetStream()
-	if err != nil {
-		logger.Error("failed to create JetStream context", slog.Any("error", err))
-		os.Exit(1)
-	}
-
-	if err := eventbus.BootstrapWorkflowStreams(
-		js,
-		true,
-		nats.StreamConfig{Name: "MARKETPLACE", Subjects: []string{"marketplace.>"}},
-	); err != nil {
-		logger.Error("failed to bootstrap workflow streams", slog.Any("error", err))
-		os.Exit(1)
-	}
 
 	// 5. Initialize Event Marketplace Registry
 	eventRegistry := marketplace.NewMongoEventRegistry(db)
