@@ -44,6 +44,24 @@ func NewPublishEventExecutor(js nats.JetStreamContext, registry marketplace.Even
 	return e
 }
 
+// NewPublishEventWorkerHandler adapts the publish-event executor to the worker handler contract.
+func NewPublishEventWorkerHandler(
+	js nats.JetStreamContext,
+	registry marketplace.EventRegistry,
+	logger *slog.Logger,
+) func(ctx context.Context, input, params map[string]any) (NodeResult, error) {
+	executor := NewPublishEventExecutor(js, registry, WithPublishEventLogger(logger))
+
+	return func(ctx context.Context, input, params map[string]any) (NodeResult, error) {
+		executionID, _ := input["_execution_id"].(string)
+		if executionID == "" {
+			executionID = uuid.New().String()
+		}
+
+		return executor.Execute(ctx, executionID, input, params)
+	}
+}
+
 // Execute publishes an event to the marketplace.
 func (e *PublishEventExecutor) Execute(ctx context.Context, executionID string, input, params map[string]any) (NodeResult, error) {
 	eventName, _ := params["event_name"].(string)

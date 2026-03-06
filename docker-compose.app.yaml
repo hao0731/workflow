@@ -86,6 +86,19 @@ services:
     networks:
       - orchestration
 
+  worker-firstparty:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: orchestration-worker-firstparty
+    entrypoint: ["./worker-firstparty"]
+    environment:
+      MONGO_URI: mongodb://orchestration-mongodb:27017
+      MONGO_DATABASE: orchestration
+      NATS_URL: nats://orchestration-nats:4222
+    networks:
+      - orchestration
+
 networks:
   orchestration:
     external: true

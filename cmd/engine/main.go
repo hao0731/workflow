@@ -10,7 +10,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
 
 	cloudevents "github.com/cloudevents/sdk-go/v2"
@@ -25,7 +24,6 @@ import (
 	"github.com/cheriehsieh/orchestration/internal/messaging"
 	"github.com/cheriehsieh/orchestration/internal/scheduler"
 	"github.com/cheriehsieh/orchestration/internal/schema"
-	"github.com/cheriehsieh/orchestration/internal/worker"
 )
 
 func main() {
@@ -208,53 +206,12 @@ func main() {
 		scheduler.WithLinkHandlerSubscriber(linkHandlerSub),
 	)
 
-	// 10. Initialize Workers
-	// PublishEvent executor
-	publishExecutor := engine.NewPublishEventExecutor(js, eventRegistry, engine.WithPublishEventLogger(logger))
-
-	startWorker := worker.NewWorker(
-		engine.StartNode,
-		func(ctx context.Context, input, params map[string]any) (engine.NodeResult, error) {
-			logger.InfoContext(ctx, "▶ START node executed")
-			return engine.NodeResult{Output: input, Port: engine.DefaultPort}, nil
-		},
-		eventbus.NewNATSEventBus(js, messaging.CommandNodeExecuteSubject(string(engine.StartNode), "v1"), "worker-start", eventbus.WithLogger(logger)),
-		workflowPub,
-		worker.WithWorkerLogger(logger),
-	)
-
-	actionWorker := worker.NewWorker(
-		engine.ActionNode,
-		func(ctx context.Context, input, params map[string]any) (engine.NodeResult, error) {
-			logger.InfoContext(ctx, "⚙ ACTION node executed", slog.Any("input", input))
-			return engine.NodeResult{Output: input, Port: engine.DefaultPort}, nil
-		},
-		eventbus.NewNATSEventBus(js, messaging.CommandNodeExecuteSubject(string(engine.ActionNode), "v1"), "worker-action", eventbus.WithLogger(logger)),
-		workflowPub,
-		worker.WithWorkerLogger(logger),
-	)
-
-	publishWorker := worker.NewWorker(
-		engine.PublishEvent,
-		func(ctx context.Context, input, params map[string]any) (engine.NodeResult, error) {
-			// Use execution ID from dispatch context (injected by worker)
-			execID, _ := input["_execution_id"].(string)
-			if execID == "" {
-				execID = uuid.New().String()
-			}
-			return publishExecutor.Execute(ctx, execID, input, params)
-		},
-		eventbus.NewNATSEventBus(js, messaging.CommandNodeExecuteSubject(string(engine.PublishEvent), "v1"), "worker-publish", eventbus.WithLogger(logger)),
-		workflowPub,
-		worker.WithWorkerLogger(logger),
-	)
-
-	// 11. Start all components
+	// 10. Start all components
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	components := []interface{ Start(context.Context) error }{
-		orchestrator, sched, eventRouter, linkHandler, startWorker, actionWorker, publishWorker,
+		orchestrator, sched, eventRouter, linkHandler,
 	}
 
 	for _, c := range components {
