@@ -62,9 +62,11 @@ type Scheduler struct {
 	publisher     eventbus.Publisher  // Publishes to orchestrator subject
 	subscriber    eventbus.Subscriber // Subscribes to scheduler subject
 	resultSub     eventbus.Subscriber // Subscribes to result subject
-	dispatcher    WorkerDispatcher    // Dispatches to worker subjects
+	dlqPublisher  eventbus.Publisher
+	dispatcher    WorkerDispatcher // Dispatches to worker subjects
 	workflowRepo  engine.WorkflowRepository
-	nodeValidator NodeValidator // Optional: validates node types are registered
+	nodeValidator NodeValidator   // Optional: validates node types are registered
+	resultCheck   ResultValidator // Validates worker-result payloads before handoff
 	logger        *slog.Logger
 }
 
@@ -85,6 +87,28 @@ func WithNodeValidator(v NodeValidator) SchedulerOption {
 	}
 }
 
+// WithResultValidator sets a custom worker-result validator.
+func WithResultValidator(v ResultValidator) SchedulerOption {
+	return func(s *Scheduler) {
+		s.resultCheck = v
+	}
+}
+
+// WithValidationDLQPublisher configures the DLQ publisher for invalid worker results.
+func WithValidationDLQPublisher(pub eventbus.Publisher) SchedulerOption {
+	return func(s *Scheduler) {
+		s.dlqPublisher = pub
+	}
+}
+
+// SchedulerSubscriptionSubjects returns the subjects owned by the scheduler service.
+func SchedulerSubscriptionSubjects() []string {
+	return []string{
+		messaging.SubjectRuntimeNodeScheduledV1,
+		messaging.SubjectEventNodeExecutedV1,
+	}
+}
+
 func NewScheduler(
 	es eventstore.EventStore,
 	pub eventbus.Publisher,
@@ -101,6 +125,7 @@ func NewScheduler(
 		resultSub:    resultSub,
 		dispatcher:   dispatcher,
 		workflowRepo: repo,
+		resultCheck:  RequiredResultValidator{},
 		logger:       slog.Default(),
 	}
 	for _, opt := range opts {
@@ -208,8 +233,12 @@ func (s *Scheduler) handleResult(ctx context.Context, event cloudevents.Event) e
 
 	var result NodeResultData
 	if err := event.DataAs(&result); err != nil {
-		s.logger.ErrorContext(ctx, "failed to parse result data", slog.Any("error", err))
-		return nil
+		return s.handleValidationFailure(ctx, event, fmt.Errorf("parse result data: %w", err))
+	}
+	if s.resultCheck != nil {
+		if err := s.resultCheck.Validate(ctx, event, result); err != nil {
+			return s.handleValidationFailure(ctx, event, err)
+		}
 	}
 
 	workflowID, _ := event.Extensions()["workflowid"].(string)
@@ -257,6 +286,28 @@ func (s *Scheduler) handleResult(ctx context.Context, event cloudevents.Event) e
 		RunIndex:   result.RunIndex,
 		Error:      result.Error,
 	})
+}
+
+func (s *Scheduler) handleValidationFailure(ctx context.Context, event cloudevents.Event, validationErr error) error {
+	s.logger.WarnContext(ctx, "worker result validation failed",
+		slog.String("event_id", event.ID()),
+		slog.String("subject", event.Subject()),
+		slog.Any("error", validationErr),
+	)
+
+	if s.dlqPublisher == nil {
+		return validationErr
+	}
+
+	dlqEvent, err := newValidationFailureEvent(event, validationErr)
+	if err != nil {
+		return fmt.Errorf("build validation failure dlq event: %w", err)
+	}
+	if err := s.dlqPublisher.Publish(ctx, dlqEvent); err != nil {
+		return fmt.Errorf("publish validation failure dlq event: %w", err)
+	}
+
+	return nil
 }
 
 func (s *Scheduler) newEvent(eventType, subject string) cloudevents.Event {

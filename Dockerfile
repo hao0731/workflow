@@ -17,6 +17,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -buildvcs=false -ldflags="-w -s" -o /app/e
 RUN CGO_ENABLED=0 GOOS=linux go build -buildvcs=false -ldflags="-w -s" -o /app/api ./cmd/api
 RUN CGO_ENABLED=0 GOOS=linux go build -buildvcs=false -ldflags="-w -s" -o /app/workflow-api ./cmd/workflow-api
 RUN CGO_ENABLED=0 GOOS=linux go build -buildvcs=false -ldflags="-w -s" -o /app/orchestrator ./cmd/orchestrator
+RUN CGO_ENABLED=0 GOOS=linux go build -buildvcs=false -ldflags="-w -s" -o /app/scheduler ./cmd/scheduler
 
 # Runtime stage
 FROM alpine:3.19
@@ -30,6 +31,7 @@ COPY --from=builder /app/engine .
 COPY --from=builder /app/api .
 COPY --from=builder /app/workflow-api .
 COPY --from=builder /app/orchestrator .
+COPY --from=builder /app/scheduler .
 
 # Copy scripts for schema init
 COPY scripts/ ./scripts/

@@ -107,6 +107,15 @@ func noopLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
+func TestSchedulerSubscriptionSubjects(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, []string{
+		messaging.SubjectRuntimeNodeScheduledV1,
+		messaging.SubjectEventNodeExecutedV1,
+	}, SchedulerSubscriptionSubjects())
+}
+
 func TestEventRouter_HandleMessage_SetsWorkflowIDExtension(t *testing.T) {
 	store := &captureEventStore{}
 	publisher := &capturePublisher{}
@@ -262,6 +271,11 @@ func TestScheduler_HandleResult_PublishesRuntimeNodeExecutedV1(t *testing.T) {
 	event.SetSubject("exec-2")
 	event.SetExtension("workflowid", "workflow-2")
 	event.SetExtension("executionid", "exec-2")
+	event.SetExtension("nodeid", "custom")
+	event.SetExtension("runindex", 1)
+	event.SetExtension("attempt", 1)
+	event.SetExtension("idempotencykey", "node:exec-2:custom:1:1:v1")
+	event.SetExtension("producer", "worker/http-request@v1")
 	_ = event.SetData(cloudevents.ApplicationJSON, NodeResultData{
 		NodeID:     "custom",
 		OutputPort: engine.PortSuccess,
@@ -311,6 +325,7 @@ func TestScheduler_HandleResult_DedupIgnoresDuplicateNodeResults(t *testing.T) {
 		event.SetExtension("runindex", 1)
 		event.SetExtension("attempt", 1)
 		event.SetExtension("idempotencykey", "node:exec-2:custom:1:1:v1")
+		event.SetExtension("producer", "worker/http-request@v1")
 		_ = event.SetData(cloudevents.ApplicationJSON, NodeResultData{
 			ExecutionID: "exec-2",
 			NodeID:      "custom",

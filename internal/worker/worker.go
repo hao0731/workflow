@@ -110,6 +110,9 @@ func (w *Worker) handleDispatch(ctx context.Context, event cloudevents.Event) er
 	resultEvent.SetExtension("nodeid", dispatch.NodeID)
 	resultEvent.SetExtension("runindex", dispatch.RunIndex)
 	resultEvent.SetExtension("attempt", 1)
+	if idempotencyKey, ok := event.Extensions()["idempotencykey"].(string); ok && idempotencyKey != "" {
+		resultEvent.SetExtension("idempotencykey", idempotencyKey)
+	}
 
 	if err != nil {
 		w.logger.ErrorContext(ctx, "node execution failed",
