@@ -84,6 +84,8 @@ docker compose -f docker-compose.app.yaml logs -f
 | `workflow-api` | 8083      | `curl http://localhost:8083/health` |
 | `engine`       | —         | Check logs |
 
+The `workflow-api` service exposes workflow CRUD endpoints, including `GET /api/workflows/:id/source` for persisted DSL source and definition metadata.
+
 **Option B: Run on host with Go**
 
 ```bash

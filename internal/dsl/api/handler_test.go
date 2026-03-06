@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/cheriehsieh/orchestration/internal/dsl"
+	"github.com/cheriehsieh/orchestration/internal/engine"
 	"github.com/cheriehsieh/orchestration/internal/marketplace"
 )
 
@@ -29,8 +30,68 @@ func (m *mockEventBus) Publish(_ context.Context, event cloudevents.Event) error
 	return nil
 }
 
+type recordAwareTestStore struct {
+	base    *dsl.InMemoryWorkflowStore
+	records map[string]*dsl.WorkflowRecord
+}
+
+func newRecordAwareTestStore() *recordAwareTestStore {
+	return &recordAwareTestStore{
+		base:    dsl.NewInMemoryWorkflowStore(),
+		records: make(map[string]*dsl.WorkflowRecord),
+	}
+}
+
+func (s *recordAwareTestStore) Register(ctx context.Context, wf *engine.Workflow, source []byte) error {
+	return s.base.Register(ctx, wf, source)
+}
+
+func (s *recordAwareTestStore) RegisterRecord(ctx context.Context, record *dsl.WorkflowRecord) error {
+	if err := s.base.Register(ctx, record.Workflow, record.Source); err != nil {
+		return err
+	}
+	s.records[record.ID] = record
+	return nil
+}
+
+func (s *recordAwareTestStore) GetByID(ctx context.Context, id string) (*engine.Workflow, error) {
+	return s.base.GetByID(ctx, id)
+}
+
+func (s *recordAwareTestStore) GetRecord(_ context.Context, id string) (*dsl.WorkflowRecord, error) {
+	record, ok := s.records[id]
+	if !ok {
+		return nil, dsl.ErrWorkflowNotFound
+	}
+	return record, nil
+}
+
+func (s *recordAwareTestStore) GetSource(ctx context.Context, id string) ([]byte, error) {
+	return s.base.GetSource(ctx, id)
+}
+
+func (s *recordAwareTestStore) List(ctx context.Context) ([]string, error) {
+	return s.base.List(ctx)
+}
+
+func (s *recordAwareTestStore) Delete(ctx context.Context, id string) error {
+	delete(s.records, id)
+	return s.base.Delete(ctx, id)
+}
+
 func setupTestHandler() (*WorkflowHandler, *echo.Echo) {
 	registry := dsl.NewWorkflowRegistry()
+	logger := slog.Default()
+	handler := NewWorkflowHandler(registry, logger)
+
+	e := echo.New()
+	handler.RegisterRoutes(e.Group(""))
+
+	return handler, e
+}
+
+func setupRecordAwareTestHandler() (*WorkflowHandler, *echo.Echo) {
+	registry := dsl.NewWorkflowRegistry(dsl.WithStore(newRecordAwareTestStore()))
 	logger := slog.Default()
 	handler := NewWorkflowHandler(registry, logger)
 
@@ -216,6 +277,49 @@ func TestWorkflowHandler_Get_NotFound(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
 
+func TestWorkflowHandler_GetSource_ReturnsStoredDefinitionMetadata(t *testing.T) {
+	_, e := setupRecordAwareTestHandler()
+
+	body := []byte(`
+id: source-workflow
+name: Source Workflow
+description: Stored metadata should round-trip
+version: 1.2.3
+nodes:
+  - id: start
+    type: StartNode
+    trigger:
+      type: event
+      criteria:
+        event_name: employee.created
+        domain: hr
+connections: []
+events:
+  - name: employee.created
+    domain: hr
+    description: employee created
+`)
+
+	createReq := httptest.NewRequest(http.MethodPost, "/workflows", bytes.NewReader(body))
+	e.ServeHTTP(httptest.NewRecorder(), createReq)
+
+	getReq := httptest.NewRequest(http.MethodGet, "/workflows/source-workflow/source", nil)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, getReq)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp WorkflowSourceResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, "source-workflow", resp.ID)
+	assert.Equal(t, "Source Workflow", resp.Name)
+	assert.Equal(t, "Stored metadata should round-trip", resp.Description)
+	assert.Equal(t, "1.2.3", resp.Version)
+	assert.Contains(t, resp.Source, "name: Source Workflow")
+	assert.True(t, resp.Stats.HasEventTrigger)
+	assert.Equal(t, "employee.created@hr", resp.Stats.TriggerEvent)
+}
+
 // Test: Delete workflow
 func TestWorkflowHandler_Delete(t *testing.T) {
 	handler, e := setupTestHandler()
@@ -290,6 +394,86 @@ connections:
 	nodes, ok := wf["nodes"].([]any)
 	require.True(t, ok, "nodes should be []any")
 	assert.Len(t, nodes, 2)
+}
+
+func TestWorkflowHandler_Create_PersistsDefinitionMetadata(t *testing.T) {
+	handler, e := setupRecordAwareTestHandler()
+
+	body := []byte(`
+id: create-metadata
+name: Create Metadata
+description: metadata should be persisted on create
+version: 2.0.0
+nodes:
+  - id: start
+    type: StartNode
+connections: []
+events:
+  - name: workflow.created
+    domain: testing
+    description: workflow created
+`)
+
+	req := httptest.NewRequest(http.MethodPost, "/workflows", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusCreated, rec.Code)
+
+	record, err := handler.registry.GetRecord(context.Background(), "create-metadata")
+	require.NoError(t, err)
+	require.NotNil(t, record)
+	assert.Equal(t, "Create Metadata", record.Name)
+	assert.Equal(t, "metadata should be persisted on create", record.Description)
+	assert.Equal(t, "2.0.0", record.Version)
+	require.Len(t, record.Events, 1)
+	assert.Equal(t, "workflow.created", record.Events[0].Name)
+}
+
+func TestWorkflowHandler_Update_PersistsDefinitionMetadata(t *testing.T) {
+	handler, e := setupRecordAwareTestHandler()
+
+	createBody := []byte(`
+id: update-metadata
+name: Update Metadata
+description: original description
+version: 1.0.0
+nodes:
+  - id: start
+    type: StartNode
+connections: []
+`)
+	createReq := httptest.NewRequest(http.MethodPost, "/workflows", bytes.NewReader(createBody))
+	e.ServeHTTP(httptest.NewRecorder(), createReq)
+
+	updateBody := []byte(`
+id: update-metadata
+name: Update Metadata v2
+description: updated description
+version: 2.0.0
+nodes:
+  - id: start
+    type: StartNode
+connections: []
+events:
+  - name: workflow.updated
+    domain: testing
+    description: workflow updated
+`)
+	updateReq := httptest.NewRequest(http.MethodPut, "/workflows/update-metadata", bytes.NewReader(updateBody))
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, updateReq)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	record, err := handler.registry.GetRecord(context.Background(), "update-metadata")
+	require.NoError(t, err)
+	require.NotNil(t, record)
+	assert.Equal(t, "Update Metadata v2", record.Name)
+	assert.Equal(t, "updated description", record.Description)
+	assert.Equal(t, "2.0.0", record.Version)
+	require.Len(t, record.Events, 1)
+	assert.Equal(t, "workflow.updated", record.Events[0].Name)
 }
 
 // Test: Execute workflow successfully

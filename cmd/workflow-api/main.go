@@ -163,7 +163,7 @@ func main() {
 	// Event Marketplace registry (shared between workflow and marketplace handlers)
 	eventRegistry := marketplace.NewMongoEventRegistry(db)
 
-	// Workflow routes (no eventStore — events reach Cassandra through engine)
+	// Workflow routes use the registry's metadata-aware persistence when supported.
 	workflowHandler := dslapi.NewWorkflowHandler(registry, logger,
 		dslapi.WithEventBus(executionEventBus),
 		dslapi.WithEventRegistry(eventRegistry),

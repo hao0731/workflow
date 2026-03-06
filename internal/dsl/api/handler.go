@@ -122,6 +122,10 @@ type ExecuteResponse struct {
 	StartedAt   time.Time `json:"started_at"`
 }
 
+func (h *WorkflowHandler) registerWorkflowDefinition(ctx echo.Context, def *dsl.WorkflowDefinition, wf *engine.Workflow, source []byte) error {
+	return h.registry.RegisterDefinition(ctx.Request().Context(), def, wf, source)
+}
+
 // Create handles POST /workflows
 // Query param: ?dryrun=true to validate without saving
 func (h *WorkflowHandler) Create(c echo.Context) error {
@@ -159,7 +163,7 @@ func (h *WorkflowHandler) Create(c echo.Context) error {
 	}
 
 	// Register workflow
-	if err := h.registry.RegisterWithSource(wf, body); err != nil {
+	if err := h.registerWorkflowDefinition(c, def, wf, body); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 
@@ -223,10 +227,11 @@ func (h *WorkflowHandler) Get(c echo.Context) error {
 func (h *WorkflowHandler) GetSource(c echo.Context) error {
 	id := c.Param("id")
 
-	wf, err := h.registry.GetByID(c.Request().Context(), id)
+	record, err := h.registry.GetRecord(c.Request().Context(), id)
 	if err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": err.Error()})
 	}
+	wf := record.Workflow
 
 	// Build stats
 	hasEventTrigger := false
@@ -240,9 +245,10 @@ func (h *WorkflowHandler) GetSource(c echo.Context) error {
 
 	resp := WorkflowSourceResponse{
 		ID:          wf.ID,
-		Name:        "", // Would need to store this in registry
-		Description: "",
-		Version:     "",
+		Name:        record.Name,
+		Description: record.Description,
+		Version:     record.Version,
+		Source:      string(record.Source),
 	}
 	resp.Stats.NodeCount = len(wf.Nodes)
 	resp.Stats.ConnectionCount = len(wf.Connections)
@@ -289,7 +295,7 @@ func (h *WorkflowHandler) Update(c echo.Context) error {
 	}
 
 	// Register (upsert)
-	if err := h.registry.RegisterWithSource(wf, body); err != nil {
+	if err := h.registerWorkflowDefinition(c, def, wf, body); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 
