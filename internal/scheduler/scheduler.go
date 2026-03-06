@@ -148,11 +148,11 @@ func (s *Scheduler) handleScheduled(ctx context.Context, event cloudevents.Event
 	}
 
 	// Validate node type is registered (if validator is set)
+	dispatchType := node.DispatchType()
 	if s.nodeValidator != nil {
-		fullType := string(node.Type) // For versioning, this would be nodeType@version
-		if !s.nodeValidator.Exists(ctx, fullType) {
+		if !s.nodeValidator.Exists(ctx, dispatchType) {
 			s.logger.ErrorContext(ctx, "node type not registered",
-				slog.String("node_type", fullType),
+				slog.String("node_type", dispatchType),
 			)
 			// Emit failed event
 			failedEvent := s.newEvent(engine.NodeExecutionFailed, event.Subject())
@@ -186,7 +186,7 @@ func (s *Scheduler) handleScheduled(ctx context.Context, event cloudevents.Event
 
 	s.logger.InfoContext(ctx, "dispatching to worker",
 		slog.String("node_id", payload.NodeID),
-		slog.String("node_type", string(node.Type)),
+		slog.String("node_type", dispatchType),
 	)
 
 	// 2. Dispatch to worker via node-type-specific subject
@@ -195,14 +195,14 @@ func (s *Scheduler) handleScheduled(ctx context.Context, event cloudevents.Event
 	_ = dispatchEvent.SetData(cloudevents.ApplicationJSON, NodeDispatchData{
 		ExecutionID: event.Subject(),
 		NodeID:      payload.NodeID,
-		NodeType:    string(node.Type),
+		NodeType:    dispatchType,
 		WorkflowID:  workflowID,
 		InputData:   payload.InputData,
 		Parameters:  node.Parameters,
 		RunIndex:    payload.RunIndex,
 	})
 
-	return s.dispatcher.Dispatch(ctx, string(node.Type), dispatchEvent)
+	return s.dispatcher.Dispatch(ctx, dispatchType, dispatchEvent)
 }
 
 func (s *Scheduler) handleResult(ctx context.Context, event cloudevents.Event) error {

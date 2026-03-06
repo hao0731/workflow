@@ -2,6 +2,7 @@ package registry
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -37,6 +38,23 @@ func BuildFullType(nodeType, version string) string {
 // BuildSubject creates the NATS subject for this node type.
 func BuildSubject(nodeType, version string) string {
 	return fmt.Sprintf("workflow.nodes.%s.%s", nodeType, version)
+}
+
+// SplitFullType breaks a versioned node identity into node type and version.
+func SplitFullType(fullType string) (nodeType, version string) {
+	parts := strings.SplitN(fullType, "@", 2)
+	nodeType = parts[0]
+	if len(parts) == 2 && parts[1] != "" {
+		version = parts[1]
+		return nodeType, version
+	}
+	return nodeType, "v1"
+}
+
+// BuildSubjectFromFullType creates a NATS subject from a versioned node identity.
+func BuildSubjectFromFullType(fullType string) string {
+	nodeType, version := SplitFullType(fullType)
+	return BuildSubject(nodeType, version)
 }
 
 // BuildConsumerName creates the NATS consumer name.

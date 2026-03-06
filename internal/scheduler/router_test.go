@@ -44,6 +44,34 @@ func (p *capturePublisher) Publish(_ context.Context, event cloudevents.Event) e
 	return nil
 }
 
+type captureDispatcher struct {
+	nodeType string
+	event    cloudevents.Event
+}
+
+func (d *captureDispatcher) Dispatch(_ context.Context, nodeType string, event cloudevents.Event) error {
+	d.nodeType = nodeType
+	d.event = event
+	return nil
+}
+
+type captureNodeValidator struct {
+	fullTypes []string
+}
+
+func (v *captureNodeValidator) Exists(_ context.Context, fullType string) bool {
+	v.fullTypes = append(v.fullTypes, fullType)
+	return fullType == "http-request@v1"
+}
+
+type staticWorkflowRepo struct {
+	workflow *engine.Workflow
+}
+
+func (r *staticWorkflowRepo) GetByID(_ context.Context, _ string) (*engine.Workflow, error) {
+	return r.workflow, nil
+}
+
 // staticWorkflowMatcher returns preconfigured workflows for testing.
 type staticWorkflowMatcher struct {
 	workflows []*engine.Workflow
@@ -137,4 +165,55 @@ func TestEventRouter_HandleMessage_SetsWorkflowIDExtension(t *testing.T) {
 	triggeredBy, ok := storedEvent.Extensions()["triggeredbyevent"].(string)
 	assert.True(t, ok, "triggeredbyevent extension must be set")
 	assert.Equal(t, "hr.new_employee", triggeredBy)
+}
+
+func TestEventRouter_SchedulerUsesFullTypeForDispatchAndValidation(t *testing.T) {
+	store := &captureEventStore{}
+	publisher := &capturePublisher{}
+	dispatcher := &captureDispatcher{}
+	validator := &captureNodeValidator{}
+
+	workflow := &engine.Workflow{
+		ID: "custom-worker-workflow",
+		Nodes: []engine.Node{
+			{ID: "start", Type: engine.StartNode, Name: "Start", FullType: string(engine.StartNode)},
+			{ID: "custom", Type: engine.ActionNode, Name: "Custom Worker", FullType: "http-request@v1"},
+		},
+		Connections: []engine.Connection{
+			{FromNode: "start", ToNode: "custom"},
+		},
+	}
+
+	s := NewScheduler(
+		store,
+		publisher,
+		nil,
+		nil,
+		dispatcher,
+		&staticWorkflowRepo{workflow: workflow},
+		WithSchedulerLogger(noopLogger()),
+		WithNodeValidator(validator),
+	)
+
+	event := cloudevents.NewEvent()
+	event.SetID("scheduled-1")
+	event.SetSource("test")
+	event.SetType(engine.NodeExecutionScheduled)
+	event.SetSubject("exec-1")
+	event.SetExtension("workflowid", workflow.ID)
+	_ = event.SetData(cloudevents.ApplicationJSON, engine.NodeExecutionScheduledData{
+		NodeID:    "custom",
+		InputData: map[string]any{"hello": "world"},
+		RunIndex:  0,
+	})
+
+	err := s.handleScheduled(context.Background(), event)
+	require.NoError(t, err)
+
+	require.Equal(t, []string{"http-request@v1"}, validator.fullTypes)
+	assert.Equal(t, "http-request@v1", dispatcher.nodeType)
+
+	var dispatchData NodeDispatchData
+	require.NoError(t, dispatcher.event.DataAs(&dispatchData))
+	assert.Equal(t, "http-request@v1", dispatchData.NodeType)
 }

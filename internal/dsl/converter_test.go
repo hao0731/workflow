@@ -50,6 +50,29 @@ func TestDefaultConverter_Convert_SimpleWorkflow(t *testing.T) {
 	assert.Equal(t, "action", wf.Connections[0].ToNode)
 }
 
+func TestDefaultConverter_Convert_PreservesCustomNodeDispatchIdentity(t *testing.T) {
+	def := &WorkflowDefinition{
+		ID: "dispatch-identity-workflow",
+		Nodes: []NodeDefinition{
+			{ID: "start", Type: "StartNode", Name: "Start"},
+			{ID: "custom", Type: "http-request@v1", Name: "HTTP Request"},
+		},
+		Connections: []ConnectionDef{
+			{From: "start", To: "custom"},
+		},
+	}
+
+	converter := NewDefaultConverter()
+	wf, err := converter.Convert(def)
+
+	require.NoError(t, err)
+
+	customNode := wf.GetNode("custom")
+	require.NotNil(t, customNode)
+	assert.Equal(t, engine.ActionNode, customNode.Type)
+	assert.Equal(t, "http-request@v1", customNode.FullType)
+}
+
 // Test: Convert JoinNode
 func TestDefaultConverter_Convert_JoinNode(t *testing.T) {
 	def := &WorkflowDefinition{

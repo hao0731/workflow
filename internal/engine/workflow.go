@@ -47,9 +47,26 @@ const (
 type Node struct {
 	ID         string         `json:"id"`
 	Type       NodeType       `json:"type"`
+	FullType   string         `json:"full_type,omitempty"`
 	Name       string         `json:"name"`
 	Parameters map[string]any `json:"parameters"`
 	Trigger    *Trigger       `json:"trigger,omitempty"` // Only for StartNode
+}
+
+// DispatchType returns the versioned identity used for worker routing.
+func (n *Node) DispatchType() string {
+	if n == nil {
+		return ""
+	}
+	if n.FullType != "" {
+		return n.FullType
+	}
+	if n.Parameters != nil {
+		if fullType, ok := n.Parameters["full_type"].(string); ok && fullType != "" {
+			return fullType
+		}
+	}
+	return string(n.Type)
 }
 
 // JoinConfig returns join configuration from node parameters.

@@ -59,6 +59,7 @@ func (c *DefaultConverter) Convert(def *WorkflowDefinition) (*engine.Workflow, e
 func (c *DefaultConverter) convertNode(nodeDef NodeDefinition) (engine.Node, error) { //nolint:unparam // error return reserved for future validation
 	node := engine.Node{
 		ID:         nodeDef.ID,
+		FullType:   nodeDef.Type,
 		Name:       nodeDef.Name,
 		Parameters: copyParams(nodeDef.Parameters),
 	}
