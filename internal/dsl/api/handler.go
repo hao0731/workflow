@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -12,11 +13,15 @@ import (
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 
+	workflowapi "github.com/cheriehsieh/orchestration/internal/api"
 	"github.com/cheriehsieh/orchestration/internal/dsl"
 	"github.com/cheriehsieh/orchestration/internal/engine"
 	"github.com/cheriehsieh/orchestration/internal/eventbus"
 	"github.com/cheriehsieh/orchestration/internal/marketplace"
+	"github.com/cheriehsieh/orchestration/internal/messaging"
 )
+
+var errExecutionNotAvailable = errors.New("execution not available - event bus not configured")
 
 // WorkflowHandler handles HTTP requests for workflow management.
 type WorkflowHandler struct {
@@ -374,58 +379,88 @@ func toWorkflowResponse(wf *engine.Workflow) WorkflowResponse {
 func (h *WorkflowHandler) ExecuteWorkflow(c echo.Context) error {
 	workflowID := c.Param("id")
 
-	// Verify workflow exists
-	_, err := h.registry.GetByID(c.Request().Context(), workflowID)
-	if err != nil {
-		return c.JSON(http.StatusNotFound, map[string]string{"error": "workflow not found"})
-	}
-
 	// Parse request body
 	var req ExecuteRequest
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 	}
 
-	// Check if eventBus is configured
-	if h.eventBus == nil {
-		return c.JSON(http.StatusServiceUnavailable, map[string]string{
-			"error": "execution not available - event bus not configured",
-		})
+	result, err := h.StartExecution(c.Request().Context(), workflowapi.ExecutionStartCommand{
+		WorkflowID: workflowID,
+		Input:      req.Input,
+		Producer:   "workflow-api/rest",
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, dsl.ErrWorkflowNotFound):
+			return c.JSON(http.StatusNotFound, map[string]string{"error": "workflow not found"})
+		case errors.Is(err, errExecutionNotAvailable):
+			return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": errExecutionNotAvailable.Error()})
+		default:
+			h.logger.Error("failed to start workflow execution",
+				slog.String("workflow_id", workflowID),
+				slog.Any("error", err),
+			)
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to start execution"})
+		}
 	}
 
-	// Generate execution ID
-	execID := fmt.Sprintf("exec-%d", time.Now().Unix())
+	return c.JSON(http.StatusCreated, ExecuteResponse{
+		ExecutionID: result.ExecutionID,
+		WorkflowID:  result.WorkflowID,
+		Status:      result.Status,
+		StartedAt:   result.StartedAt,
+	})
+}
 
-	// Create CloudEvent
+// StartExecution validates the workflow and emits the v2 runtime execution-start event.
+func (h *WorkflowHandler) StartExecution(ctx context.Context, command workflowapi.ExecutionStartCommand) (*workflowapi.ExecutionStartResult, error) {
+	if _, err := h.registry.GetByID(ctx, command.WorkflowID); err != nil {
+		return nil, err
+	}
+	if h.eventBus == nil {
+		return nil, errExecutionNotAvailable
+	}
+
+	startedAt := time.Now().UTC()
+	executionID := command.ExecutionID
+	if executionID == "" {
+		executionID = fmt.Sprintf("exec-%d", startedAt.UnixNano())
+	}
+
+	producer := command.Producer
+	if producer == "" {
+		producer = "workflow-api"
+	}
+
 	event := cloudevents.NewEvent()
 	event.SetID(uuid.New().String())
 	event.SetSource("orchestration.workflow-api")
-	event.SetType(engine.ExecutionStarted)
-	event.SetSubject(execID)
-	event.SetExtension("workflowid", workflowID) // For consistent querying
+	event.SetType(messaging.EventTypeRuntimeExecutionStartedV1)
+	event.SetSubject(executionID)
+	event.SetTime(startedAt)
+	event.SetExtension("workflowid", command.WorkflowID)
+	event.SetExtension("executionid", executionID)
+	event.SetExtension("producer", producer)
 	_ = event.SetData(cloudevents.ApplicationJSON, engine.ExecutionStartedData{
-		WorkflowID: workflowID,
-		InputData:  req.Input,
+		WorkflowID: command.WorkflowID,
+		InputData:  command.Input,
 	})
 
-	// Publish to NATS (events reach Cassandra through engine processing)
-	if err := h.eventBus.Publish(c.Request().Context(), event); err != nil {
-		h.logger.Error("failed to publish execution event",
-			slog.String("workflow_id", workflowID),
-			slog.Any("error", err),
-		)
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to start execution"})
+	if err := h.eventBus.Publish(ctx, event); err != nil {
+		return nil, fmt.Errorf("publish execution started event: %w", err)
 	}
 
 	h.logger.Info("workflow execution started",
-		slog.String("workflow_id", workflowID),
-		slog.String("execution_id", execID),
+		slog.String("workflow_id", command.WorkflowID),
+		slog.String("execution_id", executionID),
+		slog.String("producer", producer),
 	)
 
-	return c.JSON(http.StatusCreated, ExecuteResponse{
-		ExecutionID: execID,
-		WorkflowID:  workflowID,
+	return &workflowapi.ExecutionStartResult{
+		ExecutionID: executionID,
+		WorkflowID:  command.WorkflowID,
 		Status:      "started",
-		StartedAt:   time.Now(),
-	})
+		StartedAt:   startedAt,
+	}, nil
 }

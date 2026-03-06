@@ -18,6 +18,7 @@ import (
 	"github.com/cheriehsieh/orchestration/internal/dsl"
 	"github.com/cheriehsieh/orchestration/internal/engine"
 	"github.com/cheriehsieh/orchestration/internal/marketplace"
+	"github.com/cheriehsieh/orchestration/internal/messaging"
 )
 
 // mockEventBus captures published events for testing.
@@ -515,7 +516,10 @@ connections: []
 
 	// Verify event was published
 	require.Len(t, eventBus.events, 1)
-	assert.Equal(t, "orchestration.execution.started", eventBus.events[0].Type())
+	assert.Equal(t, messaging.EventTypeRuntimeExecutionStartedV1, eventBus.events[0].Type())
+	assert.Equal(t, "exec-test", eventBus.events[0].Extensions()["workflowid"])
+	assert.Equal(t, resp["execution_id"], eventBus.events[0].Extensions()["executionid"])
+	assert.Equal(t, "workflow-api/rest", eventBus.events[0].Extensions()["producer"])
 }
 
 // Test: Execute workflow not found

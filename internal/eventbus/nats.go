@@ -3,12 +3,15 @@ package eventbus
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/nats-io/nats.go"
 
 	cloudevents "github.com/cloudevents/sdk-go/v2"
+
+	"github.com/cheriehsieh/orchestration/internal/messaging"
 )
 
 // Compile-time interface compliance checks.
@@ -20,14 +23,32 @@ var (
 
 // NATSEventBus implements EventBus using NATS JetStream with CloudEvents.
 type NATSEventBus struct {
-	js           nats.JetStreamContext
+	js           jetStreamClient
 	subject      string
 	consumerName string
 	logger       *slog.Logger
 }
 
+type jetStreamClient interface {
+	PublishMsg(msg *nats.Msg, opts ...nats.PubOpt) (*nats.PubAck, error)
+	PullSubscribe(subj, durable string, opts ...nats.SubOpt) (*nats.Subscription, error)
+}
+
+type streamManager interface {
+	AddStream(cfg *nats.StreamConfig, opts ...nats.JSOpt) (*nats.StreamInfo, error)
+	StreamInfo(stream string, opts ...nats.JSOpt) (*nats.StreamInfo, error)
+}
+
 // NATSOption is a functional option for NATSEventBus.
 type NATSOption func(*NATSEventBus)
+
+type publishConfig struct {
+	subject string
+	headers nats.Header
+}
+
+// PublishOption configures message publishing.
+type PublishOption func(*publishConfig)
 
 // WithLogger sets a custom logger.
 func WithLogger(logger *slog.Logger) NATSOption {
@@ -36,8 +57,22 @@ func WithLogger(logger *slog.Logger) NATSOption {
 	}
 }
 
+// WithPublishSubject overrides the default subject for one publish call.
+func WithPublishSubject(subject string) PublishOption {
+	return func(cfg *publishConfig) {
+		cfg.subject = subject
+	}
+}
+
+// WithPublishHeaders injects JetStream headers for one publish call.
+func WithPublishHeaders(headers nats.Header) PublishOption {
+	return func(cfg *publishConfig) {
+		cfg.headers = cloneHeader(headers)
+	}
+}
+
 // NewNATSEventBus creates a new NATS JetStream-backed event bus.
-func NewNATSEventBus(js nats.JetStreamContext, subject, consumerName string, opts ...NATSOption) *NATSEventBus {
+func NewNATSEventBus(js jetStreamClient, subject, consumerName string, opts ...NATSOption) *NATSEventBus {
 	b := &NATSEventBus{
 		js:           js,
 		subject:      subject,
@@ -51,11 +86,32 @@ func NewNATSEventBus(js nats.JetStreamContext, subject, consumerName string, opt
 }
 
 func (b *NATSEventBus) Publish(ctx context.Context, event cloudevents.Event) error {
+	return b.PublishWithOptions(ctx, event)
+}
+
+func (b *NATSEventBus) PublishWithOptions(_ context.Context, event cloudevents.Event, opts ...PublishOption) error {
 	data, err := event.MarshalJSON()
 	if err != nil {
 		return err
 	}
-	_, err = b.js.Publish(b.subject, data)
+
+	cfg := publishConfig{
+		subject: b.subject,
+	}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	if cfg.subject == "" {
+		cfg.subject = event.Type()
+	}
+
+	msg := nats.NewMsg(cfg.subject)
+	msg.Data = data
+	if cfg.headers != nil {
+		msg.Header = cloneHeader(cfg.headers)
+	}
+
+	_, err = b.js.PublishMsg(msg)
 	return err
 }
 
@@ -101,4 +157,44 @@ func (b *NATSEventBus) Subscribe(ctx context.Context, handler EventHandler) erro
 			}
 		}
 	}
+}
+
+// EnsureStreams creates the given streams when they do not already exist.
+func EnsureStreams(js streamManager, streamConfigs ...nats.StreamConfig) error {
+	for _, streamCfg := range streamConfigs {
+		if _, err := js.StreamInfo(streamCfg.Name); err == nil {
+			continue
+		}
+
+		if _, err := js.AddStream(&streamCfg); err != nil {
+			return fmt.Errorf("add stream %s: %w", streamCfg.Name, err)
+		}
+	}
+
+	return nil
+}
+
+// BootstrapWorkflowStreams ensures the workflow v2 streams exist and optionally keeps
+// scoped legacy streams available during the migration window.
+func BootstrapWorkflowStreams(js streamManager, includeLegacy bool, extraStreams ...nats.StreamConfig) error {
+	streams := append([]nats.StreamConfig{}, messaging.WorkflowStreams()...)
+	if includeLegacy {
+		streams = append(streams, messaging.LegacyWorkflowStreams()...)
+	}
+	streams = append(streams, extraStreams...)
+
+	return EnsureStreams(js, streams...)
+}
+
+func cloneHeader(header nats.Header) nats.Header {
+	if header == nil {
+		return nil
+	}
+
+	cloned := make(nats.Header, len(header))
+	for key, values := range header {
+		cloned[key] = append([]string(nil), values...)
+	}
+
+	return cloned
 }

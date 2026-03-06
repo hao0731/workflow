@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/cheriehsieh/orchestration/internal/engine"
+	"github.com/cheriehsieh/orchestration/internal/messaging"
 )
 
 // captureEventStore captures appended events for inspection.
@@ -212,8 +213,53 @@ func TestEventRouter_SchedulerUsesFullTypeForDispatchAndValidation(t *testing.T)
 
 	require.Equal(t, []string{"http-request@v1"}, validator.fullTypes)
 	assert.Equal(t, "http-request@v1", dispatcher.nodeType)
+	assert.Equal(t, messaging.CommandNodeExecuteSubjectFromFullType("http-request@v1"), dispatcher.event.Type())
 
 	var dispatchData NodeDispatchData
 	require.NoError(t, dispatcher.event.DataAs(&dispatchData))
 	assert.Equal(t, "http-request@v1", dispatchData.NodeType)
+}
+
+func TestScheduler_HandleResult_PublishesRuntimeNodeExecutedV1(t *testing.T) {
+	store := &captureEventStore{}
+	publisher := &capturePublisher{}
+
+	s := NewScheduler(
+		store,
+		publisher,
+		nil,
+		nil,
+		&captureDispatcher{},
+		&staticWorkflowRepo{},
+		WithSchedulerLogger(noopLogger()),
+	)
+
+	event := cloudevents.NewEvent()
+	event.SetID("node-result-1")
+	event.SetSource("worker/http-request-v1")
+	event.SetType(messaging.EventTypeNodeExecutedV1)
+	event.SetSubject("exec-2")
+	event.SetExtension("workflowid", "workflow-2")
+	event.SetExtension("executionid", "exec-2")
+	_ = event.SetData(cloudevents.ApplicationJSON, NodeResultData{
+		NodeID:     "custom",
+		OutputPort: engine.PortSuccess,
+		OutputData: map[string]any{"status": "ok"},
+		RunIndex:   1,
+	})
+
+	err := s.handleResult(context.Background(), event)
+	require.NoError(t, err)
+
+	require.Len(t, store.events, 1)
+	require.Len(t, publisher.events, 1)
+	assert.Equal(t, messaging.EventTypeRuntimeNodeExecutedV1, store.events[0].Type())
+	assert.Equal(t, messaging.EventTypeRuntimeNodeExecutedV1, publisher.events[0].Type())
+
+	var data engine.NodeExecutionResultData
+	require.NoError(t, publisher.events[0].DataAs(&data))
+	assert.Equal(t, "custom", data.NodeID)
+	assert.Equal(t, engine.PortSuccess, data.OutputPort)
+	assert.Equal(t, map[string]any{"status": "ok"}, data.OutputData)
+	assert.Equal(t, 1, data.RunIndex)
 }

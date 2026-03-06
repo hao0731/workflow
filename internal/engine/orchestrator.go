@@ -74,8 +74,8 @@ func (o *Orchestrator) handleEvent(ctx context.Context, event cloudevents.Event)
 	switch event.Type() {
 	case ExecutionStarted:
 		return o.handleExecutionStarted(ctx, event)
-	case NodeExecutionCompleted:
-		return o.handleNodeExecutionCompleted(ctx, event)
+	case NodeExecutionExecuted:
+		return o.handleNodeExecutionExecuted(ctx, event)
 	}
 	return nil
 }
@@ -105,10 +105,10 @@ func (o *Orchestrator) handleExecutionStarted(ctx context.Context, event cloudev
 	return o.scheduleNode(ctx, event.Subject(), startNode.ID, payload.InputData, 0, payload.WorkflowID)
 }
 
-func (o *Orchestrator) handleNodeExecutionCompleted(ctx context.Context, event cloudevents.Event) error {
-	var payload NodeExecutionCompletedData
+func (o *Orchestrator) handleNodeExecutionExecuted(ctx context.Context, event cloudevents.Event) error {
+	var payload NodeExecutionResultData
 	if err := event.DataAs(&payload); err != nil {
-		return fmt.Errorf("failed to parse NodeExecutionCompleted data: %w", err)
+		return fmt.Errorf("failed to parse NodeExecutionExecuted data: %w", err)
 	}
 
 	workflowID, _ := event.Extensions()["workflowid"].(string)
@@ -125,6 +125,9 @@ func (o *Orchestrator) handleNodeExecutionCompleted(ctx context.Context, event c
 	}
 
 	executionID := event.Subject()
+	if payload.Error != "" {
+		return o.emitExecutionFailed(ctx, executionID, workflowID, payload.Error)
+	}
 
 	// Route based on output port
 	nextNodes := workflow.GetNextNodes(payload.NodeID, payload.OutputPort)
@@ -209,6 +212,25 @@ func (o *Orchestrator) emitExecutionCompleted(ctx context.Context, executionID, 
 		return err
 	}
 	return o.publisher.Publish(ctx, finishedEvent)
+}
+
+func (o *Orchestrator) emitExecutionFailed(ctx context.Context, executionID, workflowID, message string) error {
+	o.logger.InfoContext(ctx, "execution failed",
+		slog.String("execution_id", executionID),
+		slog.String("error", message),
+	)
+
+	failedEvent := o.newEvent(ExecutionFailed, executionID)
+	failedEvent.SetExtension("workflowid", workflowID)
+	_ = failedEvent.SetData(cloudevents.ApplicationJSON, ExecutionFailedData{
+		Error: message,
+	})
+
+	if err := o.eventStore.Append(ctx, failedEvent); err != nil {
+		return err
+	}
+
+	return o.publisher.Publish(ctx, failedEvent)
 }
 
 func (o *Orchestrator) scheduleNode(ctx context.Context, executionID, nodeID string, inputData map[string]any, runIndex int, workflowID string) error {

@@ -12,15 +12,12 @@ import (
 	"github.com/cheriehsieh/orchestration/internal/engine"
 	"github.com/cheriehsieh/orchestration/internal/eventbus"
 	"github.com/cheriehsieh/orchestration/internal/eventstore"
+	"github.com/cheriehsieh/orchestration/internal/messaging"
 )
 
 const (
 	// EventSource for scheduler events.
 	EventSource = "orchestration/scheduler"
-
-	// Event types for worker dispatch.
-	NodeDispatch = "orchestration.node.dispatch"
-	NodeResult   = "orchestration.node.result"
 )
 
 var (
@@ -154,34 +151,12 @@ func (s *Scheduler) handleScheduled(ctx context.Context, event cloudevents.Event
 			s.logger.ErrorContext(ctx, "node type not registered",
 				slog.String("node_type", dispatchType),
 			)
-			// Emit failed event
-			failedEvent := s.newEvent(engine.NodeExecutionFailed, event.Subject())
-			failedEvent.SetExtension("workflowid", workflowID)
-			_ = failedEvent.SetData(cloudevents.ApplicationJSON, engine.NodeExecutionFailedData{
+			return s.publishNodeExecuted(ctx, event.Subject(), workflowID, engine.NodeExecutionResultData{
 				NodeID:   payload.NodeID,
 				RunIndex: payload.RunIndex,
 				Error:    ErrNodeTypeNotRegistered.Error(),
 			})
-			if err := s.eventStore.Append(ctx, failedEvent); err != nil {
-				return err
-			}
-			return s.publisher.Publish(ctx, failedEvent)
 		}
-	}
-
-	// 1. Emit NodeExecutionStarted to Orchestrator
-	startedEvent := s.newEvent(engine.NodeExecutionStarted, event.Subject())
-	startedEvent.SetExtension("workflowid", workflowID)
-	_ = startedEvent.SetData(cloudevents.ApplicationJSON, engine.NodeExecutionStartedData{
-		NodeID:   payload.NodeID,
-		RunIndex: payload.RunIndex,
-	})
-
-	if err := s.eventStore.Append(ctx, startedEvent); err != nil {
-		return err
-	}
-	if err := s.publisher.Publish(ctx, startedEvent); err != nil {
-		return err
 	}
 
 	s.logger.InfoContext(ctx, "dispatching to worker",
@@ -189,9 +164,11 @@ func (s *Scheduler) handleScheduled(ctx context.Context, event cloudevents.Event
 		slog.String("node_type", dispatchType),
 	)
 
-	// 2. Dispatch to worker via node-type-specific subject
-	dispatchEvent := s.newEvent(NodeDispatch, event.Subject())
+	// Dispatch to worker via the versioned command subject for this node type.
+	dispatchEvent := s.newEvent(messaging.CommandNodeExecuteSubjectFromFullType(dispatchType), event.Subject())
 	dispatchEvent.SetExtension("workflowid", workflowID)
+	dispatchEvent.SetExtension("executionid", event.Subject())
+	dispatchEvent.SetExtension("producer", "scheduler")
 	_ = dispatchEvent.SetData(cloudevents.ApplicationJSON, NodeDispatchData{
 		ExecutionID: event.Subject(),
 		NodeID:      payload.NodeID,
@@ -206,7 +183,7 @@ func (s *Scheduler) handleScheduled(ctx context.Context, event cloudevents.Event
 }
 
 func (s *Scheduler) handleResult(ctx context.Context, event cloudevents.Event) error {
-	if event.Type() != NodeResult {
+	if event.Type() != messaging.EventTypeNodeExecutedV1 {
 		return nil
 	}
 
@@ -217,46 +194,28 @@ func (s *Scheduler) handleResult(ctx context.Context, event cloudevents.Event) e
 	}
 
 	workflowID, _ := event.Extensions()["workflowid"].(string)
+	executionID, _ := event.Extensions()["executionid"].(string)
+	if executionID == "" {
+		executionID = result.ExecutionID
+	}
 
 	s.logger.DebugContext(ctx, "received worker result",
 		slog.String("node_id", result.NodeID),
 		slog.String("output_port", result.OutputPort),
 	)
 
-	// Forward completion/failure to Orchestrator
-	if result.Error != "" {
-		failedEvent := s.newEvent(engine.NodeExecutionFailed, result.ExecutionID)
-		failedEvent.SetExtension("workflowid", workflowID)
-		_ = failedEvent.SetData(cloudevents.ApplicationJSON, engine.NodeExecutionFailedData{
-			NodeID:   result.NodeID,
-			RunIndex: result.RunIndex,
-			Error:    result.Error,
-		})
-
-		if err := s.eventStore.Append(ctx, failedEvent); err != nil {
-			return err
-		}
-		return s.publisher.Publish(ctx, failedEvent)
-	}
-
 	port := result.OutputPort
 	if port == "" {
 		port = engine.DefaultPort
 	}
 
-	completedEvent := s.newEvent(engine.NodeExecutionCompleted, result.ExecutionID)
-	completedEvent.SetExtension("workflowid", workflowID)
-	_ = completedEvent.SetData(cloudevents.ApplicationJSON, engine.NodeExecutionCompletedData{
+	return s.publishNodeExecuted(ctx, executionID, workflowID, engine.NodeExecutionResultData{
 		NodeID:     result.NodeID,
 		OutputPort: port,
 		OutputData: result.OutputData,
 		RunIndex:   result.RunIndex,
+		Error:      result.Error,
 	})
-
-	if err := s.eventStore.Append(ctx, completedEvent); err != nil {
-		return err
-	}
-	return s.publisher.Publish(ctx, completedEvent)
 }
 
 func (s *Scheduler) newEvent(eventType, subject string) cloudevents.Event {
@@ -266,4 +225,20 @@ func (s *Scheduler) newEvent(eventType, subject string) cloudevents.Event {
 	event.SetType(eventType)
 	event.SetSubject(subject)
 	return event
+}
+
+func (s *Scheduler) publishNodeExecuted(ctx context.Context, executionID, workflowID string, result engine.NodeExecutionResultData) error {
+	executedEvent := s.newEvent(engine.NodeExecutionExecuted, executionID)
+	executedEvent.SetExtension("workflowid", workflowID)
+	executedEvent.SetExtension("executionid", executionID)
+	executedEvent.SetExtension("producer", "scheduler")
+	executedEvent.SetExtension("nodeid", result.NodeID)
+	executedEvent.SetExtension("runindex", result.RunIndex)
+	_ = executedEvent.SetData(cloudevents.ApplicationJSON, result)
+
+	if err := s.eventStore.Append(ctx, executedEvent); err != nil {
+		return err
+	}
+
+	return s.publisher.Publish(ctx, executedEvent)
 }

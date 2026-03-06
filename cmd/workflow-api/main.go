@@ -24,6 +24,7 @@ import (
 	"github.com/cheriehsieh/orchestration/internal/eventbus"
 	"github.com/cheriehsieh/orchestration/internal/eventstore"
 	"github.com/cheriehsieh/orchestration/internal/marketplace"
+	"github.com/cheriehsieh/orchestration/internal/messaging"
 )
 
 func main() {
@@ -103,17 +104,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Ensure stream exists for execution events
-	streamCfg := &nats.StreamConfig{
-		Name:     "WORKFLOW_EVENTS",
-		Subjects: []string{"workflow.events.>"},
-	}
-	if _, err := js.AddStream(streamCfg); err != nil {
-		logger.Debug("stream may already exist", slog.String("stream", streamCfg.Name))
+	if err := eventbus.BootstrapWorkflowStreams(js, true); err != nil {
+		logger.Error("failed to bootstrap workflow streams", slog.Any("error", err))
+		os.Exit(1)
 	}
 
-	// Create EventBus for publishing execution events
-	executionEventBus := eventbus.NewNATSEventBus(js, "workflow.events.execution", "workflow-api", eventbus.WithLogger(logger))
+	// Create EventBus instances for the v2 execute flow.
+	executionEventBus := eventbus.NewNATSEventBus(js, messaging.SubjectRuntimeExecutionStartedV1, "workflow-api-runtime", eventbus.WithLogger(logger))
+	commandEventBus := eventbus.NewNATSEventBus(js, messaging.SubjectCommandExecuteV1, "workflow-api-command", eventbus.WithLogger(logger))
 	logger.Info("connected to NATS", slog.String("url", cfg.NATSURL))
 
 	// 6. Optionally load workflows from directory
@@ -169,6 +167,11 @@ func main() {
 		dslapi.WithEventRegistry(eventRegistry),
 	)
 	workflowHandler.RegisterRoutes(apiGroup)
+	commandConsumer := api.NewCommandConsumer(
+		commandEventBus,
+		workflowHandler,
+		api.WithCommandConsumerLogger(logger),
+	)
 
 	// Execution routes
 	execStore := eventstore.NewMongoExecutionStore(db, "executions")
@@ -187,6 +190,16 @@ func main() {
 	e.GET("/health", func(c echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
 	})
+
+	serviceCtx, serviceCancel := context.WithCancel(context.Background())
+	defer serviceCancel()
+
+	go func() {
+		if err := commandConsumer.Start(serviceCtx); err != nil && !errors.Is(err, context.Canceled) {
+			logger.Error("command consumer error", slog.Any("error", err))
+			os.Exit(1)
+		}
+	}()
 
 	// 8. Start server in goroutine
 	go func() {
@@ -207,6 +220,7 @@ func main() {
 	<-sigChan
 
 	logger.Info("shutting down workflow API server...")
+	serviceCancel()
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 	if err := e.Shutdown(shutdownCtx); err != nil {

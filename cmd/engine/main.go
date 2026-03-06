@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -15,12 +16,15 @@ import (
 	"github.com/nats-io/nats.go"
 	"go.mongodb.org/mongo-driver/mongo"
 
+	cloudevents "github.com/cloudevents/sdk-go/v2"
+
 	"github.com/cheriehsieh/orchestration/internal/config"
 	"github.com/cheriehsieh/orchestration/internal/dsl"
 	"github.com/cheriehsieh/orchestration/internal/engine"
 	"github.com/cheriehsieh/orchestration/internal/eventbus"
 	"github.com/cheriehsieh/orchestration/internal/eventstore"
 	"github.com/cheriehsieh/orchestration/internal/marketplace"
+	"github.com/cheriehsieh/orchestration/internal/messaging"
 	"github.com/cheriehsieh/orchestration/internal/scheduler"
 	"github.com/cheriehsieh/orchestration/internal/worker"
 )
@@ -91,16 +95,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Create streams
-	streams := []nats.StreamConfig{
-		{Name: "WORKFLOW_EVENTS", Subjects: []string{"workflow.events.>"}},
-		{Name: "WORKFLOW_NODES", Subjects: []string{"workflow.nodes.>"}},
-		{Name: "MARKETPLACE", Subjects: []string{"marketplace.>"}},
-	}
-	for _, streamCfg := range streams {
-		if _, err := js.AddStream(&streamCfg); err != nil {
-			logger.Debug("stream may already exist", slog.String("stream", streamCfg.Name))
-		}
+	if err := eventbus.BootstrapWorkflowStreams(
+		js,
+		true,
+		nats.StreamConfig{Name: "MARKETPLACE", Subjects: []string{"marketplace.>"}},
+	); err != nil {
+		logger.Error("failed to bootstrap workflow streams", slog.Any("error", err))
+		os.Exit(1)
 	}
 
 	// 5. Initialize Event Marketplace Registry
@@ -188,34 +189,33 @@ func main() {
 	joinStore := engine.NewInMemoryJoinStateStore()
 	joinManager := engine.NewJoinStateManager(joinStore)
 
-	orchestratorPub := eventbus.NewNATSEventBus(js, "workflow.events.scheduler", "orchestrator-pub", eventbus.WithLogger(logger))
-	orchestratorSub := eventbus.NewNATSEventBus(js, "workflow.events.execution", "orchestrator", eventbus.WithLogger(logger))
+	workflowPub := eventbus.NewNATSEventBus(js, "", "workflow-pub", eventbus.WithLogger(logger))
+	orchestratorSub := eventbus.NewNATSEventBus(js, messaging.PlaneWildcardSubject(messaging.PlaneRuntime), "orchestrator", eventbus.WithLogger(logger))
 
 	orchestrator := engine.NewOrchestrator(
-		eventStoreImpl, orchestratorPub, orchestratorSub, workflowRepo,
+		eventStoreImpl, workflowPub, orchestratorSub, workflowRepo,
 		engine.WithOrchestratorLogger(logger),
 		engine.WithJoinStateManager(joinManager),
 	)
 
 	// 8. Initialize Scheduler
-	schedulerSub := eventbus.NewNATSEventBus(js, "workflow.events.scheduler", "scheduler", eventbus.WithLogger(logger))
-	schedulerPub := eventbus.NewNATSEventBus(js, "workflow.events.execution", "scheduler-pub", eventbus.WithLogger(logger))
-	resultSub := eventbus.NewNATSEventBus(js, "workflow.events.results", "scheduler-results", eventbus.WithLogger(logger))
+	schedulerSub := eventbus.NewNATSEventBus(js, messaging.SubjectRuntimeNodeScheduledV1, "scheduler", eventbus.WithLogger(logger))
+	resultSub := eventbus.NewNATSEventBus(js, messaging.SubjectEventNodeExecutedV1, "scheduler-results", eventbus.WithLogger(logger))
 	dispatcher := scheduler.NewNATSDispatcher(js, "workflow.nodes")
 
 	sched := scheduler.NewScheduler(
-		eventStoreImpl, schedulerPub, schedulerSub, resultSub, dispatcher, workflowRepo,
+		eventStoreImpl, workflowPub, schedulerSub, resultSub, dispatcher, workflowRepo,
 		scheduler.WithSchedulerLogger(logger),
 	)
 
 	// 9. Initialize Event Router (Marketplace)
 	eventRouter := scheduler.NewEventRouter(
-		js, workflowRepo, eventStoreImpl, orchestratorSub,
+		js, workflowRepo, eventStoreImpl, workflowPub,
 		scheduler.WithEventRouterLogger(logger),
 	)
 
 	// 9b. Initialize Execution Link Handler
-	linkHandlerSub := eventbus.NewNATSEventBus(js, "workflow.events.execution", "link-handler", eventbus.WithLogger(logger))
+	linkHandlerSub := eventbus.NewNATSEventBus(js, messaging.PlaneWildcardSubject(messaging.PlaneRuntime), "link-handler", eventbus.WithLogger(logger))
 	linkHandler := scheduler.NewExecutionLinkHandler(
 		executionStore,
 		scheduler.WithLinkHandlerLogger(logger),
@@ -223,8 +223,6 @@ func main() {
 	)
 
 	// 10. Initialize Workers
-	resultPub := eventbus.NewNATSEventBus(js, "workflow.events.results", "worker-results", eventbus.WithLogger(logger))
-
 	// PublishEvent executor
 	publishExecutor := engine.NewPublishEventExecutor(js, eventRegistry, engine.WithPublishEventLogger(logger))
 
@@ -234,8 +232,8 @@ func main() {
 			logger.InfoContext(ctx, "▶ START node executed")
 			return engine.NodeResult{Output: input, Port: engine.DefaultPort}, nil
 		},
-		eventbus.NewNATSEventBus(js, "workflow.nodes.StartNode", "worker-start", eventbus.WithLogger(logger)),
-		resultPub,
+		eventbus.NewNATSEventBus(js, messaging.CommandNodeExecuteSubject(string(engine.StartNode), "v1"), "worker-start", eventbus.WithLogger(logger)),
+		workflowPub,
 		worker.WithWorkerLogger(logger),
 	)
 
@@ -245,8 +243,8 @@ func main() {
 			logger.InfoContext(ctx, "⚙ ACTION node executed", slog.Any("input", input))
 			return engine.NodeResult{Output: input, Port: engine.DefaultPort}, nil
 		},
-		eventbus.NewNATSEventBus(js, "workflow.nodes.ActionNode", "worker-action", eventbus.WithLogger(logger)),
-		resultPub,
+		eventbus.NewNATSEventBus(js, messaging.CommandNodeExecuteSubject(string(engine.ActionNode), "v1"), "worker-action", eventbus.WithLogger(logger)),
+		workflowPub,
 		worker.WithWorkerLogger(logger),
 	)
 
@@ -260,8 +258,8 @@ func main() {
 			}
 			return publishExecutor.Execute(ctx, execID, input, params)
 		},
-		eventbus.NewNATSEventBus(js, "workflow.nodes.PublishEvent", "worker-publish", eventbus.WithLogger(logger)),
-		resultPub,
+		eventbus.NewNATSEventBus(js, messaging.CommandNodeExecuteSubject(string(engine.PublishEvent), "v1"), "worker-publish", eventbus.WithLogger(logger)),
+		workflowPub,
 		worker.WithWorkerLogger(logger),
 	)
 
@@ -282,6 +280,31 @@ func main() {
 		}()
 	}
 
+	startLegacyBridge(
+		ctx,
+		logger,
+		workflowPub,
+		eventbus.NewNATSEventBus(js, "workflow.events.execution", "compat-legacy-execution", eventbus.WithLogger(logger)),
+	)
+	startLegacyBridge(
+		ctx,
+		logger,
+		workflowPub,
+		eventbus.NewNATSEventBus(js, "workflow.events.scheduler", "compat-legacy-scheduler", eventbus.WithLogger(logger)),
+	)
+	startLegacyBridge(
+		ctx,
+		logger,
+		workflowPub,
+		eventbus.NewNATSEventBus(js, "workflow.events.results", "compat-legacy-results", eventbus.WithLogger(logger)),
+	)
+	startLegacyBridge(
+		ctx,
+		logger,
+		workflowPub,
+		eventbus.NewNATSEventBus(js, "workflow.nodes.>", "compat-legacy-dispatch", eventbus.WithLogger(logger)),
+	)
+
 	logger.Info("🚀 Engine started - workflows can now be triggered via API",
 		slog.String("endpoint", "POST /api/workflows/:id/execute"),
 	)
@@ -291,6 +314,35 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan
 	logger.Info("shutting down...")
+}
+
+func startLegacyBridge(
+	ctx context.Context,
+	logger *slog.Logger,
+	publisher eventbus.Publisher,
+	subscriber eventbus.Subscriber,
+) {
+	go func() {
+		err := subscriber.Subscribe(ctx, func(ctx context.Context, event cloudevents.Event) error {
+			translated, _, ok, err := messaging.TranslateLegacyEvent(event)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return nil
+			}
+
+			logger.InfoContext(ctx, "translated legacy workflow event",
+				slog.String("legacy_type", event.Type()),
+				slog.String("v2_type", translated.Type()),
+			)
+
+			return publisher.Publish(ctx, translated)
+		})
+		if err != nil && !errors.Is(err, context.Canceled) {
+			logger.Error("legacy compatibility bridge error", slog.Any("error", err))
+		}
+	}()
 }
 
 // InMemoryWorkflowRepo is a simple in-memory workflow repository.

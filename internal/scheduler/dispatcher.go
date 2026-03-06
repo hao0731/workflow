@@ -2,18 +2,18 @@ package scheduler
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/nats-io/nats.go"
 
 	cloudevents "github.com/cloudevents/sdk-go/v2"
+
+	"github.com/cheriehsieh/orchestration/internal/messaging"
 )
 
 // NATSDispatcher implements WorkerDispatcher using NATS JetStream.
-// It publishes to subjects like: workflow.nodes.<node_type>
 type NATSDispatcher struct {
 	js            nats.JetStreamContext
-	subjectPrefix string // e.g., "workflow.nodes"
+	subjectPrefix string
 }
 
 // Compile-time interface compliance check.
@@ -28,7 +28,7 @@ func NewNATSDispatcher(js nats.JetStreamContext, subjectPrefix string) *NATSDisp
 }
 
 func (d *NATSDispatcher) Dispatch(ctx context.Context, nodeType string, event cloudevents.Event) error {
-	subject := fmt.Sprintf("%s.%s", d.subjectPrefix, nodeType)
+	subject := messaging.CommandNodeExecuteSubjectFromFullType(nodeType)
 
 	data, err := event.MarshalJSON()
 	if err != nil {

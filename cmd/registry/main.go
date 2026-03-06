@@ -16,6 +16,7 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 
 	"github.com/cheriehsieh/orchestration/internal/config"
+	"github.com/cheriehsieh/orchestration/internal/eventbus"
 	"github.com/cheriehsieh/orchestration/internal/registry"
 )
 
@@ -63,15 +64,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Create streams if needed
-	streams := []nats.StreamConfig{
-		{Name: "WORKFLOW_NODES", Subjects: []string{"workflow.nodes.>"}},
-		{Name: "WORKFLOW_RESULTS", Subjects: []string{"workflow.events.results"}},
-	}
-	for _, streamCfg := range streams {
-		if _, err := js.AddStream(&streamCfg); err != nil {
-			logger.Debug("stream may already exist", slog.String("stream", streamCfg.Name))
-		}
+	if err := eventbus.BootstrapWorkflowStreams(js, true); err != nil {
+		logger.Error("failed to bootstrap workflow streams", slog.Any("error", err))
+		os.Exit(1)
 	}
 
 	// 5. Initialize Registry components

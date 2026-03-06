@@ -13,6 +13,7 @@ import (
 	"github.com/cheriehsieh/orchestration/internal/eventbus"
 	eventbusmocks "github.com/cheriehsieh/orchestration/internal/eventbus/mocks"
 	eventstoremocks "github.com/cheriehsieh/orchestration/internal/eventstore/mocks"
+	"github.com/cheriehsieh/orchestration/internal/messaging"
 )
 
 func TestOrchestrator_HandleEvent(t *testing.T) {
@@ -35,19 +36,19 @@ func TestOrchestrator_HandleEvent(t *testing.T) {
 			expectedCalls: func(es *eventstoremocks.MockEventStore, pub *eventbusmocks.MockPublisher, repo *enginemocks.MockWorkflowRepository) {
 				repo.EXPECT().GetByID(mock.Anything, "test-workflow").Return(testWorkflow(), nil)
 				es.EXPECT().Append(mock.Anything, mock.MatchedBy(func(e cloudevents.Event) bool {
-					return e.Type() == engine.NodeExecutionScheduled
+					return e.Type() == messaging.EventTypeRuntimeNodeScheduledV1
 				})).Return(nil)
 				pub.EXPECT().Publish(mock.Anything, mock.MatchedBy(func(e cloudevents.Event) bool {
-					return e.Type() == engine.NodeExecutionScheduled
+					return e.Type() == messaging.EventTypeRuntimeNodeScheduledV1
 				})).Return(nil)
 			},
 			wantErr: false,
 		},
 		{
-			name:       "NodeExecutionCompleted routes based on output port",
-			eventType:  engine.NodeExecutionCompleted,
+			name:       "NodeExecutionExecuted routes based on output port",
+			eventType:  engine.NodeExecutionExecuted,
 			workflowID: "conditional-workflow",
-			eventData: engine.NodeExecutionCompletedData{
+			eventData: engine.NodeExecutionResultData{
 				NodeID:     "check",
 				OutputPort: engine.PortTrue,
 				OutputData: map[string]any{"result": "ok"},
@@ -59,10 +60,10 @@ func TestOrchestrator_HandleEvent(t *testing.T) {
 				es.EXPECT().Append(mock.Anything, mock.MatchedBy(func(e cloudevents.Event) bool {
 					var data engine.NodeExecutionScheduledData
 					_ = e.DataAs(&data)
-					return e.Type() == engine.NodeExecutionScheduled && data.NodeID == "on-true"
+					return e.Type() == messaging.EventTypeRuntimeNodeScheduledV1 && data.NodeID == "on-true"
 				})).Return(nil)
 				pub.EXPECT().Publish(mock.Anything, mock.MatchedBy(func(e cloudevents.Event) bool {
-					return e.Type() == engine.NodeExecutionScheduled
+					return e.Type() == messaging.EventTypeRuntimeNodeScheduledV1
 				})).Return(nil)
 			},
 			wantErr: false,

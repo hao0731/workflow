@@ -10,6 +10,7 @@ import (
 
 	"github.com/cheriehsieh/orchestration/internal/engine"
 	"github.com/cheriehsieh/orchestration/internal/eventbus"
+	"github.com/cheriehsieh/orchestration/internal/messaging"
 	"github.com/cheriehsieh/orchestration/internal/scheduler"
 )
 
@@ -65,7 +66,7 @@ func (w *Worker) Start(ctx context.Context) error {
 	)
 
 	return w.subscriber.Subscribe(ctx, func(ctx context.Context, event cloudevents.Event) error {
-		if event.Type() != scheduler.NodeDispatch {
+		if event.Type() != messaging.CommandNodeExecuteSubjectFromFullType(string(w.nodeType)) {
 			return nil
 		}
 		return w.handleDispatch(ctx, event)
@@ -102,8 +103,13 @@ func (w *Worker) handleDispatch(ctx context.Context, event cloudevents.Event) er
 	result, err := w.handler(ctx, input, dispatch.Parameters)
 
 	// Build result event
-	resultEvent := w.newEvent(scheduler.NodeResult, dispatch.ExecutionID)
+	resultEvent := w.newEvent(messaging.EventTypeNodeExecutedV1, dispatch.ExecutionID)
 	resultEvent.SetExtension("workflowid", workflowID)
+	resultEvent.SetExtension("executionid", dispatch.ExecutionID)
+	resultEvent.SetExtension("producer", "worker/"+string(w.nodeType))
+	resultEvent.SetExtension("nodeid", dispatch.NodeID)
+	resultEvent.SetExtension("runindex", dispatch.RunIndex)
+	resultEvent.SetExtension("attempt", 1)
 
 	if err != nil {
 		w.logger.ErrorContext(ctx, "node execution failed",
@@ -143,7 +149,7 @@ func (w *Worker) handleDispatch(ctx context.Context, event cloudevents.Event) er
 func (w *Worker) newEvent(eventType, subject string) cloudevents.Event {
 	event := cloudevents.NewEvent()
 	event.SetID(uuid.New().String())
-	event.SetSource("orchestration/worker/" + string(w.nodeType))
+	event.SetSource("worker/" + string(w.nodeType))
 	event.SetType(eventType)
 	event.SetSubject(subject)
 	return event
