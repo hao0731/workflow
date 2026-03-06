@@ -30,6 +30,7 @@ Both use the same scheduler dispatch/result contract.
 In scope:
 
 - workflow definition, validation, and orchestration
+- MongoDB-backed workflow definition storage and retrieval
 - event contracts and runtime coordination
 - reliability primitives (dedup, schema validation, DLQ)
 - Cassandra-backed EventStore abstraction
@@ -54,6 +55,7 @@ flowchart LR
   ORC["orchestrator"]
   SCH["scheduler"]
   REG["workflow-schema-registry"]
+  WDEF["Workflow Definition Store\n(MongoDB)"]
   ES["EventStore interface\n(Cassandra adapter in Phase 1)"]
 
   EXT <-->|workflow.command.* / workflow.event.*| NATS
@@ -63,6 +65,8 @@ flowchart LR
   ORC <-->|runtime| NATS
   SCH <-->|runtime + command + event + dlq| NATS
   SCH --> REG
+  API --> WDEF
+  ORC --> WDEF
   API --> ES
   ORC --> ES
   SCH --> ES
@@ -78,6 +82,7 @@ flowchart LR
 | `first-party worker services` | Worker implementations shipped by this repository for built-in node types. Must be running to execute those node types. |
 | `custom worker services` | External worker implementations for custom node types. |
 | `workflow-schema-registry` | Versioned schema lookup for event payload validation. |
+| `WorkflowDefinitionStore (MongoDB)` | Stores workflow definitions (DSL + normalized structure) for CRUD and orchestration lookup. |
 | `EventStore` | Persistent event/audit and dedup record abstraction. |
 
 ## 3. Workflow Modeling
@@ -151,6 +156,32 @@ Supported templates:
 - `{{.input.<field>}}`
 - `{{.event.<field>}}`
 - `{{.node.<id>.<field>}}`
+
+### 3.5 Workflow Definition Persistence (MongoDB)
+
+Workflow definitions are persisted in MongoDB as the source of truth for workflow structure.
+
+Collection example: `workflow_definitions`
+
+```json
+{
+  "_id": "hr-onboarding",
+  "name": "HR Onboarding",
+  "version": "1.0.0",
+  "dsl_source": "id: hr-onboarding\nnodes: ...",
+  "nodes": [],
+  "connections": [],
+  "events": [],
+  "created_at": "2026-03-06T00:00:00Z",
+  "updated_at": "2026-03-06T00:00:00Z"
+}
+```
+
+Recommended indexes:
+
+- unique index on `_id`
+- index on `updated_at` (list/recent workflows)
+- optional index on `events.name` + `events.domain` (event-trigger lookup)
 
 ## 4. Event-Driven Runtime Design
 
@@ -401,9 +432,22 @@ publish   = ["workflow.command.node.execute.>", "workflow.runtime.node.executed.
 subscribe = ["workflow.runtime.node.scheduled.v1", "workflow.event.node.executed.v1"]
 ```
 
-## 7. Data and State (Cassandra EventStore)
+## 7. Data and State Stores
 
-### 7.1 EventStore Interface
+### 7.1 Workflow Definition Store (MongoDB)
+
+Primary responsibility:
+
+- persist workflow definitions for CRUD
+- serve orchestration-time lookup (`workflow_id` -> definition)
+
+Primary query paths:
+
+- `GetByID(workflow_id)`
+- `ListWorkflows()`
+- `FindByEventTrigger(event_name, domain)` (if event-driven start is enabled)
+
+### 7.2 EventStore Interface
 
 ```go
 type EventStore interface {
@@ -413,7 +457,7 @@ type EventStore interface {
 }
 ```
 
-### 7.2 Cassandra Keyspace and Tables
+### 7.3 Cassandra Keyspace and Tables
 
 ```sql
 CREATE KEYSPACE IF NOT EXISTS workflow_engine
@@ -445,7 +489,7 @@ CREATE TABLE IF NOT EXISTS workflow_engine.dedup_keys (
 );
 ```
 
-### 7.3 Query Paths and Write Rules
+### 7.4 Query Paths and Write Rules
 
 Primary query paths:
 
@@ -467,7 +511,7 @@ Interpretation:
 - `applied=true`: first seen, continue processing
 - `applied=false`: duplicate, skip processing
 
-### 7.4 Operational Defaults
+### 7.5 Operational Defaults
 
 - RF: 3 (production baseline)
 - write consistency: `LOCAL_QUORUM`
