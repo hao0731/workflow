@@ -12,13 +12,12 @@ RUN go mod download
 # Copy source code
 COPY . .
 
-# Build all service binaries
-RUN CGO_ENABLED=0 GOOS=linux go build -buildvcs=false -ldflags="-w -s" -o /app/engine ./cmd/engine
-RUN CGO_ENABLED=0 GOOS=linux go build -buildvcs=false -ldflags="-w -s" -o /app/api ./cmd/api
+# Build all supported service binaries
 RUN CGO_ENABLED=0 GOOS=linux go build -buildvcs=false -ldflags="-w -s" -o /app/workflow-api ./cmd/workflow-api
 RUN CGO_ENABLED=0 GOOS=linux go build -buildvcs=false -ldflags="-w -s" -o /app/orchestrator ./cmd/orchestrator
 RUN CGO_ENABLED=0 GOOS=linux go build -buildvcs=false -ldflags="-w -s" -o /app/scheduler ./cmd/scheduler
 RUN CGO_ENABLED=0 GOOS=linux go build -buildvcs=false -ldflags="-w -s" -o /app/worker-firstparty ./cmd/worker-firstparty
+RUN CGO_ENABLED=0 GOOS=linux go build -buildvcs=false -ldflags="-w -s" -o /app/registry ./cmd/registry
 
 # Runtime stage
 FROM alpine:3.19
@@ -28,12 +27,11 @@ WORKDIR /app
 RUN apk --no-cache add ca-certificates
 
 # Copy binaries from builder
-COPY --from=builder /app/engine .
-COPY --from=builder /app/api .
 COPY --from=builder /app/workflow-api .
 COPY --from=builder /app/orchestrator .
 COPY --from=builder /app/scheduler .
 COPY --from=builder /app/worker-firstparty .
+COPY --from=builder /app/registry .
 
 # Copy scripts for schema init
 COPY scripts/ ./scripts/
@@ -42,4 +40,4 @@ COPY scripts/ ./scripts/
 RUN adduser -D -g '' appuser && chown -R appuser:appuser /app
 USER appuser
 
-ENTRYPOINT ["./engine"]
+ENTRYPOINT ["./workflow-api"]

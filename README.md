@@ -1,145 +1,124 @@
 # Orchestration Engine
 
-A workflow orchestration engine built with Go, using a CQRS/event-sourced architecture with Cassandra for event writes, MongoDB for read models, and NATS JetStream for event streaming.
+A workflow orchestration engine built with Go, MongoDB, Cassandra, and NATS JetStream.
+
+## Supported Runtime Topology
+
+The supported Workflow V2 runtime is split into five services:
+
+| Service | Responsibility | Default Port |
+|---|---|---|
+| `workflow-api` | Workflow CRUD and execution entrypoint | `8083` |
+| `orchestrator` | DAG traversal and runtime scheduling decisions | — |
+| `scheduler` | Worker dispatch, node-result validation, and DLQ publishing | — |
+| `worker-firstparty` | Repository-provided `StartNode`, `JoinNode`, and `PublishEvent` workers | — |
+| `registry` | Node registration and WebSocket proxy | `8084` |
+
+`cmd/api` and `cmd/engine` are deprecated compatibility wrappers and are not part of the supported topology.
 
 ## Prerequisites
 
 - [Go 1.25+](https://go.dev/dl/)
 - [Docker](https://docs.docker.com/get-docker/) and Docker Compose
 
-## Architecture
+## Docker Compose Layout
 
-The project uses two separate Docker Compose files:
+The project uses two Docker Compose files:
 
 | File | Purpose | Services |
-|------|---------|----------|
-| `docker-compose.yaml` | Infrastructure (long-lived) | MongoDB, NATS, Cassandra |
-| `docker-compose.app.yaml` | Applications (rebuild frequently) | engine, api, workflow-api |
+|---|---|---|
+| `docker-compose.yaml` | Infrastructure | MongoDB, NATS, Cassandra |
+| `docker-compose.app.yaml` | Supported application services | `workflow-api`, `orchestrator`, `scheduler`, `worker-firstparty`, `registry` |
 
-Infrastructure and application services communicate over a shared Docker network (`orchestration`). This split lets you rebuild and restart apps without touching infra.
+Infrastructure and application services communicate over the shared `orchestration` Docker network.
 
 ## Getting Started
 
-### 1. Start Infrastructure Services
+### 1. Start Infrastructure
 
 ```bash
 docker compose up -d
 ```
 
-This starts three services on a shared Docker network (`orchestration`):
+This starts MongoDB, NATS, and Cassandra.
 
-| Service   | Image             | Purpose                     | Host Port |
-|-----------|-------------------|-----------------------------|-----------|
-| MongoDB   | mongo:7.0         | Read models, workflow store | 27018     |
-| NATS      | nats:2.10-alpine  | Event streaming (JetStream) | 4222 (client), 8222 (monitoring) |
-| Cassandra | cassandra:4.1     | Event write store           | -         |
+### 2. Initialize Cassandra
 
-- **MongoDB** is exposed on `localhost:27018` for tools like [MongoDB Compass](https://www.mongodb.com/products/compass).
-- **NATS** client connections on `localhost:4222`, monitoring dashboard at `http://localhost:8222`.
-- **Cassandra** is only accessible within the Docker network.
-
-### 2. Wait for Cassandra to be Ready
-
-Cassandra takes about 30-60 seconds to start. Check its health:
-
-```bash
-docker compose ps
-```
-
-Wait until the cassandra service shows `healthy` status.
-
-### 3. Initialize Cassandra Schema
+Wait for Cassandra to become healthy, then run:
 
 ```bash
 docker exec -i orchestration-cassandra cqlsh < scripts/cassandra-init.cql
 ```
 
-This creates the `orchestration` keyspace and the `events` table.
-
-### 4. Configure Environment
+### 3. Configure Environment
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` as needed. The defaults work for local development with the Docker Compose setup.
+The defaults work for the local Docker topology.
 
-### 5. Run Application Services
-
-**Option A: Docker (recommended)**
-
-Make sure infrastructure is running first (`docker compose ps`), then:
+### 4. Start Supported Application Services
 
 ```bash
-# Build and start all app services (engine, api, workflow-api)
 docker compose -f docker-compose.app.yaml up --build -d
-
-# View logs
 docker compose -f docker-compose.app.yaml logs -f
 ```
 
-| Service        | Host Port | Health Check |
-|----------------|-----------|--------------|
-| `api`          | 8081      | `curl http://localhost:8081/api/workflows` |
-| `workflow-api` | 8083      | `curl http://localhost:8083/health` |
-| `engine`       | —         | Check logs |
+| Service | Host Port | Health Check |
+|---|---|---|
+| `workflow-api` | `8083` | `curl http://localhost:8083/health` |
+| `registry` | `8084` | `curl http://localhost:8084/health` |
+| `orchestrator` | — | `docker compose -f docker-compose.app.yaml logs orchestrator` |
+| `scheduler` | — | `docker compose -f docker-compose.app.yaml logs scheduler` |
+| `worker-firstparty` | — | `docker compose -f docker-compose.app.yaml logs worker-firstparty` |
 
-The `workflow-api` service exposes workflow CRUD endpoints, including `GET /api/workflows/:id/source` for persisted DSL source and definition metadata.
-
-**Option B: Run on host with Go**
+### 5. Run on Host Instead of Docker
 
 ```bash
-# Build all services
-go build ./...
-
-# Run the workflow engine
-go run ./cmd/engine
-
-# Run the workflow API (in a separate terminal)
 go run ./cmd/workflow-api
-
-# Run the API server (in a separate terminal)
-go run ./cmd/api
+go run ./cmd/orchestrator
+go run ./cmd/scheduler
+go run ./cmd/worker-firstparty
+go run ./cmd/registry
 ```
 
 ## Configuration
 
-Configuration is loaded from environment variables (or `.env` file). Key settings:
+Configuration is loaded from environment variables and optional `.env`.
 
-| Variable            | Default                      | Description                          |
-|---------------------|------------------------------|--------------------------------------|
-| `APP_ENV`           | `development`                | Application environment              |
-| `PORT`              | `8081`                       | HTTP server port                     |
-| `MONGO_URI`         | `mongodb://localhost:27018`  | MongoDB connection string            |
-| `MONGO_DATABASE`    | `orchestration`              | MongoDB database name                |
-| `NATS_URL`          | `nats://localhost:4222`      | NATS server URL                      |
-| `CASSANDRA_HOSTS`   | `localhost`                  | Cassandra cluster hosts (comma-separated) |
-| `CASSANDRA_KEYSPACE`| `orchestration`              | Cassandra keyspace                   |
-| `CASSANDRA_PORT`    | `9042`                       | Cassandra CQL port                   |
-| `MIGRATION_PHASE`   | `shadow`                     | Event store migration phase          |
+| Variable | Default | Description |
+|---|---|---|
+| `APP_ENV` | `development` | Application environment |
+| `PORT` | `8081` | HTTP port for services that use `PORT` |
+| `WORKFLOW_API_PORT` | `8083` | HTTP port for `workflow-api` |
+| `MONGO_URI` | `mongodb://localhost:27018` | MongoDB connection string |
+| `MONGO_DATABASE` | `orchestration` | MongoDB database name |
+| `NATS_URL` | `nats://localhost:4222` | NATS server URL |
+| `CASSANDRA_HOSTS` | `localhost` | Cassandra cluster hosts |
+| `CASSANDRA_KEYSPACE` | `orchestration` | Cassandra keyspace |
+| `CASSANDRA_PORT` | `9042` | Cassandra CQL port |
+| `JWT_SECRET` | empty | Registry JWT signing secret |
 
-## Running Tests
+## Verification
+
+Use this sequence to verify the supported runtime topology:
 
 ```bash
-# Run all tests (MongoDB/Cassandra tests skip if services are unavailable)
 go test ./...
-
-# Run with verbose output
-go test ./... -v
+go build ./cmd/workflow-api ./cmd/orchestrator ./cmd/scheduler ./cmd/worker-firstparty ./cmd/registry
+docker compose -f docker-compose.app.yaml up --build -d
+curl http://localhost:8083/health
+curl http://localhost:8084/health
+docker compose -f docker-compose.app.yaml ps
 ```
+
+`docker compose -f docker-compose.app.yaml ps` should show exactly these application services: `workflow-api`, `orchestrator`, `scheduler`, `worker-firstparty`, and `registry`.
 
 ## Stopping Services
 
 ```bash
-# Stop app services only (infra stays running)
 docker compose -f docker-compose.app.yaml down
-
-# Restart apps (rebuild and start fresh)
-docker compose -f docker-compose.app.yaml up --build -d
-
-# Stop infra services (data persists in volumes)
 docker compose down
-
-# Stop infra and delete all data
 docker compose down -v
 ```

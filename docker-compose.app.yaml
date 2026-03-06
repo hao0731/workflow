@@ -1,40 +1,6 @@
 name: orchestration-app
 
 services:
-  engine:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: orchestration-engine
-    entrypoint: ["./engine"]
-    environment:
-      MONGO_URI: mongodb://orchestration-mongodb:27017
-      MONGO_DATABASE: orchestration
-      NATS_URL: nats://orchestration-nats:4222
-      CASSANDRA_HOSTS: orchestration-cassandra
-      CASSANDRA_KEYSPACE: orchestration
-      CASSANDRA_PORT: 9042
-    networks:
-      - orchestration
-
-  api:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: orchestration-api
-    entrypoint: ["./api"]
-    ports:
-      - "8081:8081"
-    environment:
-      MONGO_URI: mongodb://orchestration-mongodb:27017
-      MONGO_DATABASE: orchestration
-      API_PORT: 8081
-      CASSANDRA_HOSTS: orchestration-cassandra
-      CASSANDRA_KEYSPACE: orchestration
-      CASSANDRA_PORT: 9042
-    networks:
-      - orchestration
-
   workflow-api:
     build:
       context: .
@@ -93,6 +59,23 @@ services:
     container_name: orchestration-worker-firstparty
     entrypoint: ["./worker-firstparty"]
     environment:
+      MONGO_URI: mongodb://orchestration-mongodb:27017
+      MONGO_DATABASE: orchestration
+      NATS_URL: nats://orchestration-nats:4222
+    networks:
+      - orchestration
+
+  registry:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: orchestration-registry
+    entrypoint: ["./registry"]
+    ports:
+      - "8084:8084"
+    environment:
+      PORT: 8084
+      JWT_SECRET: default-secret-change-in-production
       MONGO_URI: mongodb://orchestration-mongodb:27017
       MONGO_DATABASE: orchestration
       NATS_URL: nats://orchestration-nats:4222

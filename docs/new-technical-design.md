@@ -54,7 +54,7 @@ flowchart LR
   API["workflow-api"]
   ORC["orchestrator"]
   SCH["scheduler"]
-  REG["workflow-schema-registry"]
+  REG["registry"]
   WDEF["Workflow Definition Store\n(MongoDB)"]
   ES["EventStore interface\n(Cassandra adapter in Phase 1)"]
 
@@ -81,9 +81,29 @@ flowchart LR
 | `scheduler` | Converts schedule events into worker dispatch commands. Validates node-result schemas and returns execution results to orchestrator. |
 | `first-party worker services` | Worker implementations shipped by this repository for built-in node types. Must be running to execute those node types. |
 | `custom worker services` | External worker implementations for custom node types. |
-| `workflow-schema-registry` | Versioned schema lookup for event payload validation. |
+| `registry` | Node registration and worker proxying. Optional schema-registry integration is configured externally via `SCHEMA_REGISTRY_URL`. |
 | `WorkflowDefinitionStore (MongoDB)` | Stores workflow definitions (DSL + normalized structure) for CRUD and orchestration lookup. |
 | `EventStore` | Persistent event/audit and dedup record abstraction. |
+
+### 2.3 Supported Deployment Topology
+
+The supported Workflow V2 runtime consists of these five binaries only:
+
+- `cmd/workflow-api`
+- `cmd/orchestrator`
+- `cmd/scheduler`
+- `cmd/worker-firstparty`
+- `cmd/registry`
+
+Legacy entrypoints:
+
+- `cmd/api` is deprecated and unsupported.
+- `cmd/engine` is deprecated and unsupported.
+
+Repository-specific note:
+
+- The built-in `cmd/registry` binary is the supported node-registry service for worker registration and proxying.
+- Schema-registry integration remains an external dependency configured via `SCHEMA_REGISTRY_URL`; it is not a first-party runtime binary in this repository.
 
 ## 3. Workflow Modeling
 
@@ -549,7 +569,7 @@ sequenceDiagram
   participant W as Worker Service (First-party or Custom)
   participant N as NATS
   participant SCH as scheduler
-  participant REG as schema-registry
+  participant REG as registry
   participant DLQ as WF_DLQ
 
   W->>N: workflow.event.node.executed.v1 (invalid payload)
