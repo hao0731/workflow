@@ -96,7 +96,7 @@ func (r *WorkflowRegistry) LoadFile(ctx context.Context, path string) error {
 		return fmt.Errorf("conversion failed: %w", err)
 	}
 
-	return r.store.Register(ctx, wf, data)
+	return r.RegisterDefinition(ctx, def, wf, data)
 }
 
 // LoadDirectory loads all workflow files from a directory.
@@ -135,6 +135,28 @@ func (r *WorkflowRegistry) GetSource(ctx context.Context, id string) ([]byte, er
 	return r.store.GetSource(ctx, id)
 }
 
+// GetRecord returns the persisted workflow metadata and runtime graph when supported.
+func (r *WorkflowRegistry) GetRecord(ctx context.Context, id string) (*WorkflowRecord, error) {
+	if recordStore, ok := r.store.(WorkflowRecordStore); ok {
+		return recordStore.GetRecord(ctx, id)
+	}
+
+	workflow, err := r.store.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	source, err := r.store.GetSource(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	return &WorkflowRecord{
+		ID:       workflow.ID,
+		Source:   source,
+		Workflow: workflow,
+	}, nil
+}
+
 // ListWorkflows returns all loaded workflow IDs.
 func (r *WorkflowRegistry) ListWorkflows() []string {
 	ids, _ := r.store.List(context.Background())
@@ -146,8 +168,8 @@ func (r *WorkflowRegistry) Register(wf *engine.Workflow) error {
 	return r.RegisterWithSource(wf, nil)
 }
 
-// RegisterWithSource adds or updates a workflow with its YAML source.
-func (r *WorkflowRegistry) RegisterWithSource(wf *engine.Workflow, source []byte) error {
+// RegisterDefinition adds or updates a workflow with its parsed DSL metadata.
+func (r *WorkflowRegistry) RegisterDefinition(ctx context.Context, def *WorkflowDefinition, wf *engine.Workflow, source []byte) error {
 	if wf == nil {
 		return fmt.Errorf("workflow is nil")
 	}
@@ -155,7 +177,16 @@ func (r *WorkflowRegistry) RegisterWithSource(wf *engine.Workflow, source []byte
 		return fmt.Errorf("workflow ID is required")
 	}
 
-	return r.store.Register(context.Background(), wf, source)
+	if recordStore, ok := r.store.(WorkflowRecordStore); ok {
+		return recordStore.RegisterRecord(ctx, NewWorkflowRecord(def, wf, source))
+	}
+
+	return r.store.Register(ctx, wf, source)
+}
+
+// RegisterWithSource adds or updates a workflow with its YAML source.
+func (r *WorkflowRegistry) RegisterWithSource(wf *engine.Workflow, source []byte) error {
+	return r.RegisterDefinition(context.Background(), nil, wf, source)
 }
 
 // Delete removes a workflow from the registry.

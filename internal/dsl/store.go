@@ -23,3 +23,9 @@ type WorkflowStore interface {
 	// Delete removes a workflow by its ID.
 	Delete(ctx context.Context, id string) error
 }
+
+// WorkflowRecordStore adds metadata-aware persistence operations on top of WorkflowStore.
+type WorkflowRecordStore interface {
+	RegisterRecord(ctx context.Context, record *WorkflowRecord) error
+	GetRecord(ctx context.Context, id string) (*WorkflowRecord, error)
+}

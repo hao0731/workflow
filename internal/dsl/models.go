@@ -1,5 +1,11 @@
 package dsl
 
+import (
+	"time"
+
+	"github.com/cheriehsieh/orchestration/internal/engine"
+)
+
 // WorkflowDefinition represents the top-level YAML structure.
 type WorkflowDefinition struct {
 	ID          string            `yaml:"id" json:"id"`
@@ -41,4 +47,41 @@ type EventDefinition struct {
 	Domain      string `yaml:"domain" json:"domain"`
 	Description string `yaml:"description" json:"description"`
 	Schema      any    `yaml:"schema" json:"schema"`
+}
+
+// WorkflowRecord contains the persisted workflow definition metadata and runtime graph.
+type WorkflowRecord struct {
+	ID          string            `json:"id" bson:"_id"`
+	Name        string            `json:"name,omitempty" bson:"name,omitempty"`
+	Description string            `json:"description,omitempty" bson:"description,omitempty"`
+	Version     string            `json:"version,omitempty" bson:"version,omitempty"`
+	Source      []byte            `json:"source,omitempty" bson:"source"`
+	Events      []EventDefinition `json:"events,omitempty" bson:"events,omitempty"`
+	Workflow    *engine.Workflow  `json:"-" bson:"-"`
+	CreatedAt   time.Time         `json:"created_at,omitempty" bson:"created_at,omitempty"`
+	UpdatedAt   time.Time         `json:"updated_at,omitempty" bson:"updated_at,omitempty"`
+}
+
+// NewWorkflowRecord builds a persisted workflow record from the parsed DSL and runtime graph.
+func NewWorkflowRecord(def *WorkflowDefinition, wf *engine.Workflow, source []byte) *WorkflowRecord {
+	record := &WorkflowRecord{
+		Source:   source,
+		Workflow: wf,
+	}
+
+	if wf != nil {
+		record.ID = wf.ID
+	}
+
+	if def == nil {
+		return record
+	}
+
+	record.ID = def.ID
+	record.Name = def.Name
+	record.Description = def.Description
+	record.Version = def.Version
+	record.Events = append([]EventDefinition(nil), def.Events...)
+
+	return record
 }
