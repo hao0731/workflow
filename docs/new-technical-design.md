@@ -452,6 +452,8 @@ Primary query paths:
 ```go
 type EventStore interface {
   Append(ctx context.Context, event CloudEvent) error
+  GetBySubject(ctx context.Context, subject string) ([]CloudEvent, error)
+  GetEventsByExecution(ctx context.Context, executionID string, since *time.Time) ([]CloudEvent, error)
   ExistsByDedupKey(ctx context.Context, dedupKey string) (bool, error)
   SaveDedupRecord(ctx context.Context, dedupKey string, ttl time.Duration) error
 }
@@ -460,30 +462,26 @@ type EventStore interface {
 ### 7.3 Cassandra Keyspace and Tables
 
 ```sql
-CREATE KEYSPACE IF NOT EXISTS workflow_engine
-WITH replication = {
-  'class': 'NetworkTopologyStrategy',
-  'datacenter1': 3
-};
+CREATE KEYSPACE IF NOT EXISTS orchestration
+  WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1};
 ```
 
 ```sql
-CREATE TABLE IF NOT EXISTS workflow_engine.execution_events (
-  execution_id text,
-  event_day date,
-  event_time timestamp,
-  event_id text,
-  workflow_id text,
-  event_type text,
-  source text,
+CREATE TABLE IF NOT EXISTS orchestration.events (
   subject text,
-  payload text,
-  PRIMARY KEY ((execution_id, event_day), event_time, event_id)
-) WITH CLUSTERING ORDER BY (event_time ASC, event_id ASC);
+  time timestamp,
+  id text,
+  type text,
+  source text,
+  datacontenttype text,
+  data text,
+  extensions map<text, text>,
+  PRIMARY KEY (subject, time, id)
+) WITH CLUSTERING ORDER BY (time ASC, id ASC);
 ```
 
 ```sql
-CREATE TABLE IF NOT EXISTS workflow_engine.dedup_keys (
+CREATE TABLE IF NOT EXISTS orchestration.dedup_keys (
   dedup_key text PRIMARY KEY,
   created_at timestamp
 );
@@ -494,16 +492,15 @@ CREATE TABLE IF NOT EXISTS workflow_engine.dedup_keys (
 Primary query paths:
 
 - append/replay by `execution_id`
-- fetch recent events by `execution_id + event_day`
+- fetch recent events by `execution_id`
 - idempotency check by `dedup_key`
 
 Dedup write pattern (LWT):
 
 ```sql
-INSERT INTO workflow_engine.dedup_keys (dedup_key, created_at)
+INSERT INTO orchestration.dedup_keys (dedup_key, created_at)
 VALUES (?, toTimestamp(now()))
-IF NOT EXISTS
-USING TTL ?;
+IF NOT EXISTS USING TTL ?;
 ```
 
 Interpretation:

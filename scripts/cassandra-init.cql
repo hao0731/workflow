@@ -17,3 +17,9 @@ CREATE TABLE IF NOT EXISTS orchestration.events (
   AND compaction = {'class': 'TimeWindowCompactionStrategy',
                     'compaction_window_size': 1,
                     'compaction_window_unit': 'DAYS'};
+
+-- Dedup records used for idempotency checks.
+CREATE TABLE IF NOT EXISTS orchestration.dedup_keys (
+    dedup_key  TEXT PRIMARY KEY,
+    created_at TIMESTAMP
+);

@@ -3,6 +3,7 @@ package eventstore
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -57,6 +58,49 @@ func (s *CassandraEventStore) GetBySubject(ctx context.Context, subject string) 
 
 func (s *CassandraEventStore) GetEventsByExecution(ctx context.Context, executionID string, since *time.Time) ([]cloudevents.Event, error) {
 	return s.queryEvents(ctx, executionID, since)
+}
+
+func (s *CassandraEventStore) ExistsByDedupKey(ctx context.Context, dedupKey string) (bool, error) {
+	var storedKey string
+	err := s.session.Query(
+		"SELECT dedup_key FROM dedup_keys WHERE dedup_key = ? LIMIT 1",
+		dedupKey,
+	).WithContext(ctx).Scan(&storedKey)
+	if err != nil {
+		if errors.Is(err, gocql.ErrNotFound) {
+			return false, nil
+		}
+		return false, fmt.Errorf("check dedup key %q: %w", dedupKey, err)
+	}
+
+	return true, nil
+}
+
+func (s *CassandraEventStore) SaveDedupRecord(ctx context.Context, dedupKey string, ttl time.Duration) error {
+	if ttl <= 0 {
+		return fmt.Errorf("dedup record ttl must be positive")
+	}
+
+	ttlSeconds := int((ttl + time.Second - 1) / time.Second)
+	previous := make(map[string]any)
+	applied, err := s.session.Query(
+		`INSERT INTO dedup_keys (dedup_key, created_at)
+		 VALUES (?, ?)
+		 IF NOT EXISTS
+		 USING TTL ?`,
+		dedupKey,
+		time.Now().UTC(),
+		ttlSeconds,
+	).WithContext(ctx).SerialConsistency(gocql.LocalSerial).MapScanCAS(previous)
+	if err != nil {
+		return fmt.Errorf("save dedup record %q: %w", dedupKey, err)
+	}
+
+	if !applied {
+		return nil
+	}
+
+	return nil
 }
 
 // queryEvents retrieves events by partition key (subject), optionally filtered by time.

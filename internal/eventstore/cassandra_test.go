@@ -26,6 +26,7 @@ func setupTestCassandra(t *testing.T) (*gocql.Session, func()) {
 
 	// Clean up before test
 	_ = session.Query("TRUNCATE events").Exec()
+	_ = session.Query("TRUNCATE dedup_keys").Exec()
 
 	return session, func() {
 		session.Close()
@@ -113,4 +114,48 @@ func TestCassandraEventStore_GetEventsByExecution(t *testing.T) {
 	events, err := store.GetEventsByExecution(ctx, "exec-since-test", &since)
 	require.NoError(t, err)
 	assert.Len(t, events, 2)
+}
+
+func TestCassandraEventStore_DedupRecords(t *testing.T) {
+	session, cleanup := setupTestCassandra(t)
+	defer cleanup()
+
+	store := NewCassandraEventStore(session)
+	ctx := context.Background()
+	dedupKey := "cmd:system:entity:entity-123:run:v1"
+
+	exists, err := store.ExistsByDedupKey(ctx, dedupKey)
+	require.NoError(t, err)
+	assert.False(t, exists)
+
+	err = store.SaveDedupRecord(ctx, dedupKey, 10*time.Minute)
+	require.NoError(t, err)
+
+	exists, err = store.ExistsByDedupKey(ctx, dedupKey)
+	require.NoError(t, err)
+	assert.True(t, exists)
+}
+
+func TestCassandraEventStore_DedupTableSchema(t *testing.T) {
+	session, cleanup := setupTestCassandra(t)
+	defer cleanup()
+
+	var tableName string
+	err := session.Query(
+		"SELECT table_name FROM system_schema.tables WHERE keyspace_name = ? AND table_name = ?",
+		"orchestration",
+		"dedup_keys",
+	).Scan(&tableName)
+	require.NoError(t, err)
+	assert.Equal(t, "dedup_keys", tableName)
+
+	var kind string
+	err = session.Query(
+		"SELECT kind FROM system_schema.columns WHERE keyspace_name = ? AND table_name = ? AND column_name = ?",
+		"orchestration",
+		"dedup_keys",
+		"dedup_key",
+	).Scan(&kind)
+	require.NoError(t, err)
+	assert.Equal(t, "partition_key", kind)
 }

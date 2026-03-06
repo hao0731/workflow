@@ -26,6 +26,8 @@ type EventStore interface {
 	GetBySubject(ctx context.Context, subject string) ([]cloudevents.Event, error)
 	// GetEventsByExecution returns all events for a given execution ID.
 	GetEventsByExecution(ctx context.Context, executionID string, since *time.Time) ([]cloudevents.Event, error)
+	ExistsByDedupKey(ctx context.Context, dedupKey string) (bool, error)
+	SaveDedupRecord(ctx context.Context, dedupKey string, ttl time.Duration) error
 }
 
 // FromCloudEvent converts a CloudEvents event to a StoredEvent.
